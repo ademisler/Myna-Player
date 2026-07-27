@@ -1,0 +1,11 @@
+[package]
+name = "subahead-pipeline"
+version = "0.1.0"
+edition = "2024"
+description = "Provider contracts and pipeline state for SubAhead"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+async-trait = "0.1"
+thiserror = "2"
+subahead-core = { path = "../subahead-core" }
