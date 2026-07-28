@@ -15,6 +15,7 @@ pub struct RuntimeStatus {
     pub ffmpeg: RuntimeDependency,
     pub ffprobe: RuntimeDependency,
     pub whisper: RuntimeDependency,
+    pub whisper_model: RuntimeDependency,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -78,6 +79,51 @@ pub struct AudioWindowResult {
     pub end_ms: u64,
     pub sample_rate: u32,
     pub channels: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionRequest {
+    pub audio_path: String,
+    pub window_start_ms: u64,
+    pub model_path: Option<String>,
+    pub language_hint: Option<String>,
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionResult {
+    pub detected_language: Option<String>,
+    pub segments: Vec<TranscriptSegment>,
+    pub model_path: String,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TranslationProviderKind {
+    None,
+    DeeplFree,
+    DeeplPro,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationBatchRequest {
+    pub segments: Vec<TranscriptSegment>,
+    pub source_language: Option<String>,
+    pub target_language: String,
+    pub provider: TranslationProviderKind,
+    pub api_key: String,
+    pub previous_context: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationBatchResult {
+    pub cues: Vec<SubtitleCue>,
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

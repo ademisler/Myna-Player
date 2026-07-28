@@ -1,6 +1,12 @@
+mod deepl;
+mod whisper_cli;
+
 use async_trait::async_trait;
-use subahead_core::{SubtitleCue, TranscriptSegment};
+use subahead_core::{SubtitleCue, TranscriptSegment, TranscriptionRequest};
 use thiserror::Error;
+
+pub use deepl::*;
+pub use whisper_cli::*;
 
 #[derive(Debug, Error)]
 pub enum PipelineError {
@@ -10,13 +16,6 @@ pub enum PipelineError {
     TranslationUnavailable(String),
     #[error("provider failed: {0}")]
     Provider(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct TranscriptionRequest {
-    pub audio_path: String,
-    pub language_hint: Option<String>,
-    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,20 +47,18 @@ pub trait TranslationProvider: Send + Sync {
 }
 
 #[derive(Debug, Default)]
-pub struct UnconfiguredWhisper;
+pub struct CliWhisper;
 
 #[async_trait]
-impl AsrEngine for UnconfiguredWhisper {
+impl AsrEngine for CliWhisper {
     fn id(&self) -> &'static str {
         "whisper.cpp"
     }
 
     async fn transcribe(
         &self,
-        _request: TranscriptionRequest,
+        request: TranscriptionRequest,
     ) -> Result<Vec<TranscriptSegment>, PipelineError> {
-        Err(PipelineError::AsrUnavailable(
-            "whisper.cpp model and executable are not configured yet".into(),
-        ))
+        Ok(transcribe_with_whisper_cli(&request)?.segments)
     }
 }

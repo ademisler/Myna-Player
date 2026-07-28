@@ -13,10 +13,13 @@ The repository now contains the first functional desktop foundation:
 - FFprobe-based media and stream inspection
 - FFmpeg extraction of 30-second, 16 kHz mono PCM windows
 - look-ahead scheduler with urgent and normal processing windows
-- provider contracts for Whisper-compatible ASR and translation engines
-- runtime checks for FFmpeg, FFprobe, and whisper.cpp
+- real whisper.cpp transcription with language detection and timed segments
+- optional DeepL Free/Pro translation with an in-memory API key
+- automatic 90-second look-ahead processing while the video plays
+- synchronized source and translated subtitle rendering
+- runtime checks for FFmpeg, FFprobe, whisper.cpp, and the local model
 
-Whisper transcription and provider-backed translation are the next implementation milestone. The UI explicitly reports them as not configured rather than simulating output.
+The current MVP processes non-overlapping 30-second windows. Model management, persistent subtitle storage, overlap-aware stitching, and additional translation providers are the next milestones.
 
 ## Architecture
 
@@ -50,6 +53,8 @@ Requirements:
 - Trunk
 - Tauri CLI 2
 - FFmpeg and FFprobe
+- whisper.cpp (`whisper-cli`)
+- a multilingual GGML Whisper model at the platform model path (`~/Library/Application Support/com.subahead.desktop/models/ggml-base.bin` on macOS) or `SUBAHEAD_WHISPER_MODEL`
 
 ```bash
 rustup target add wasm32-unknown-unknown

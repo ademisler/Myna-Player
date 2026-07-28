@@ -1,6 +1,7 @@
 use subahead_core::{
     AudioWindowRequest, AudioWindowResult, LookAheadPlan, LookAheadRequest, MediaMetadata,
-    RuntimeStatus,
+    RuntimeStatus, TranscriptionRequest, TranscriptionResult, TranslationBatchRequest,
+    TranslationBatchResult,
 };
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
@@ -53,6 +54,25 @@ async fn extract_audio_window(request: AudioWindowRequest) -> Result<AudioWindow
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn transcribe_audio(request: TranscriptionRequest) -> Result<TranscriptionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        subahead_pipeline::transcribe_with_whisper_cli(&request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn translate_segments(
+    request: TranslationBatchRequest,
+) -> Result<TranslationBatchResult, String> {
+    subahead_pipeline::translate_with_deepl(&request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -63,7 +83,9 @@ pub fn run() {
             inspect_runtime,
             probe_media,
             plan_lookahead,
-            extract_audio_window
+            extract_audio_window,
+            transcribe_audio,
+            translate_segments
         ])
         .run(tauri::generate_context!())
         .expect("error while running SubAhead");

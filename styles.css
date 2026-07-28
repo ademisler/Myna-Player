@@ -8,7 +8,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: #0b0c0d; }
-button, select { font: inherit; }
+button, select, input { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 
@@ -39,6 +39,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .subtitle-preview { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); width: min(720px, 80%); display: grid; gap: 5px; text-align: center; pointer-events: none; text-shadow: 0 2px 8px #000; }
 .subtitle-preview span { color: rgba(255,255,255,.72); font-size: 15px; }
 .subtitle-preview strong { font-size: 20px; }
+.subtitle-preview small { color: rgba(255,255,255,.62); font-size: 13px; }
 
 .timeline-card { border: 1px solid #242728; border-radius: 15px; padding: 17px 18px; background: #111314; }
 .timeline-head { display: flex; justify-content: space-between; }
@@ -61,9 +62,12 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .eyebrow { color: #69706d; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
 .status { padding: 5px 8px; border-radius: 99px; background: #1c201e; color: #88908c; font-size: 10px; }
 .status--busy { background: #2a2414; color: #ddc37b; }
+.status--running { background: #17231a; color: #a9c99d; }
 .field { display: grid; gap: 7px; margin-top: 13px; }
 .field > span { color: #858b88; font-size: 12px; }
-.field select { width: 100%; padding: 10px 11px; border: 1px solid #2c3030; border-radius: 9px; color: #dedfda; background: #0d0f10; outline: none; }
+.field select, .text-input { width: 100%; padding: 10px 11px; border: 1px solid #2c3030; border-radius: 9px; color: #dedfda; background: #0d0f10; outline: none; }
+.text-input:focus, .field select:focus { border-color: #536052; }
+.provider-note { margin: 14px 0 0; color: #6f7672; font-size: 11px; line-height: 1.5; }
 .provider-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 16px; }
 .provider { display: grid; gap: 4px; padding: 12px; text-align: left; border: 1px solid #292d2c; border-radius: 10px; color: #d7d9d4; background: #0e1011; }
 .provider span { color: #6f7672; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; }
@@ -91,3 +95,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .control-column { max-height: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .control-column .panel:first-child { grid-column: 1 / -1; }
 }
+
+.cue-count { color: #758071; font-size: 10px; }
