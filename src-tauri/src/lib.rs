@@ -66,8 +66,14 @@ async fn transcribe_audio(request: TranscriptionRequest) -> Result<Transcription
 
 #[tauri::command]
 async fn translate_segments(
-    request: TranslationBatchRequest,
+    mut request: TranslationBatchRequest,
 ) -> Result<TranslationBatchResult, String> {
+    if request.api_key.trim().is_empty() {
+        if let Ok(api_key) = std::env::var("DEEPL_AUTH_KEY") {
+            request.api_key = api_key;
+        }
+    }
+
     subahead_pipeline::translate_with_deepl(&request)
         .await
         .map_err(|error| error.to_string())

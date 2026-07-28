@@ -20,10 +20,10 @@
 
 ## Milestone 3 — Translation
 
-- [ ] DeepL adapter
+- [x] DeepL adapter
 - [ ] OpenAI-compatible adapter
 - [ ] Ollama/local adapter
-- [ ] context-aware batch translation
+- [x] context-aware batch translation
 - [ ] retry, rate-limit, and offline states
 
 ## Milestone 4 — Subtitle experience

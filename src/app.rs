@@ -340,9 +340,8 @@ pub fn App() -> impl IntoView {
                 .await?;
 
                 let mut next_cues = source_cues(&transcription);
-                let should_translate = provider != TranslationProviderKind::None
-                    && !api_key.trim().is_empty()
-                    && !transcription.segments.is_empty();
+                let should_translate =
+                    provider != TranslationProviderKind::None && !transcription.segments.is_empty();
                 if should_translate {
                     set_activity.set(format!(
                         "Translating {} subtitle segment(s)...",

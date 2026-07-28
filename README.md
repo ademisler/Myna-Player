@@ -15,6 +15,7 @@ The repository now contains the first functional desktop foundation:
 - look-ahead scheduler with urgent and normal processing windows
 - real whisper.cpp transcription with language detection and timed segments
 - optional DeepL Free/Pro translation with an in-memory API key
+- `DEEPL_AUTH_KEY` environment fallback for local development and automated testing
 - automatic 90-second look-ahead processing while the video plays
 - synchronized source and translated subtitle rendering
 - runtime checks for FFmpeg, FFprobe, whisper.cpp, and the local model
