@@ -1,0 +1,16 @@
+[package]
+name = "myna-player-storage"
+version = "0.1.0"
+edition = "2024"
+description = "SQLite persistence and media identity for Myna Player"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+myna-player-core = { path = "../myna-player-core" }
+
+[dev-dependencies]
+tempfile = "3"

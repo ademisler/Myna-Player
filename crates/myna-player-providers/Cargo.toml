@@ -1,0 +1,11 @@
+[package]
+name = "myna-player-providers"
+version = "0.1.0"
+edition = "2024"
+description = "Provider registry and credential boundary for Myna Player"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+thiserror = "2"
+myna-player-core = { path = "../myna-player-core" }

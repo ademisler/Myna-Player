@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Myna Player app icon</title>
+  <desc id="desc">A stylized myna bird with a play button and subtitle bars.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="120" y1="80" x2="900" y2="940" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#172033"/>
+      <stop offset="1" stop-color="#08111F"/>
+    </linearGradient>
+
+    <linearGradient id="gold" x1="250" y1="250" x2="760" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFD34A"/>
+      <stop offset="0.55" stop-color="#FFB300"/>
+      <stop offset="1" stop-color="#FF8A00"/>
+    </linearGradient>
+
+    <linearGradient id="beak" x1="660" y1="325" x2="900" y2="445" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFD34A"/>
+      <stop offset="0.65" stop-color="#FFB000"/>
+      <stop offset="1" stop-color="#F57C00"/>
+    </linearGradient>
+
+    <linearGradient id="cream" x1="615" y1="610" x2="875" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF8E8"/>
+      <stop offset="1" stop-color="#F2E5C8"/>
+    </linearGradient>
+
+    <linearGradient id="feather" x1="260" y1="160" x2="750" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#394255"/>
+      <stop offset="1" stop-color="#1A2232"/>
+    </linearGradient>
+
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.26"/>
+    </filter>
+  </defs>
+
+  <!-- App tile -->
+  <rect x="32" y="32" width="960" height="960" rx="218" fill="url(#bg)"/>
+
+  <!-- Golden enclosing swoosh -->
+  <path d="M285 328
+           C178 452 175 657 303 782
+           C435 911 664 913 797 790
+           C699 864 524 874 407 808
+           C276 735 225 573 272 431
+           C289 381 312 345 341 314
+           C318 324 300 334 285 328Z"
+        fill="url(#gold)"/>
+
+  <!-- Bird crest -->
+  <path d="M235 169
+           C338 229 431 161 554 164
+           C662 167 731 222 744 312
+           C679 273 621 239 527 247
+           C429 255 338 286 235 220
+           C270 236 307 241 349 236
+           C450 225 535 178 640 191
+           C556 148 417 157 329 177
+           C288 186 257 184 235 169Z"
+        fill="url(#feather)"/>
+
+  <path d="M200 230
+           C300 298 394 254 501 245
+           C596 237 667 258 728 314
+           C642 288 566 289 491 315
+           C390 350 281 326 200 230Z"
+        fill="#111928"/>
+
+  <!-- Bird head/body -->
+  <path d="M274 349
+           C339 286 431 249 534 252
+           C609 255 671 283 713 326
+           C681 355 652 382 626 410
+           C596 443 573 478 560 520
+           C542 580 549 655 585 716
+           C508 746 407 739 331 687
+           C269 645 234 575 234 498
+           C234 440 249 389 274 349Z"
+        fill="#0B1423"/>
+
+  <!-- Wing/body highlight -->
+  <path d="M246 505
+           C290 429 349 380 430 362
+           C382 396 345 437 318 491
+           C277 573 289 675 363 754
+           C285 707 242 622 246 505Z"
+        fill="#222A3B"/>
+
+  <!-- Eye patch -->
+  <path d="M363 329
+           C438 269 514 247 583 281
+           C609 294 628 314 645 341
+           C619 320 590 307 558 307
+           C508 307 469 330 432 354
+           C402 373 376 380 346 372
+           C367 367 382 350 394 334
+           C383 333 373 331 363 329Z"
+        fill="url(#gold)"/>
+
+  <!-- Eye -->
+  <circle cx="536" cy="323" r="50" fill="#111827"/>
+  <circle cx="536" cy="323" r="32" fill="#02060D"/>
+  <circle cx="552" cy="306" r="11" fill="#FFFFFF"/>
+  <path d="M505 342 C523 360 553 364 572 347" fill="none" stroke="#7B561B" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Beak -->
+  <path d="M631 349
+           C674 322 711 297 745 286
+           C802 306 853 344 891 390
+           C832 371 775 366 720 373
+           C685 378 654 387 625 399
+           C637 384 638 367 631 349Z"
+        fill="url(#beak)"/>
+  <path d="M631 349
+           C684 353 764 351 891 390
+           C826 361 770 343 712 343
+           C679 343 652 346 631 349Z"
+        fill="#F28C00"/>
+  <ellipse cx="748" cy="326" rx="18" ry="8" fill="#111827"/>
+
+  <!-- Play triangle -->
+  <path d="M382 536
+           C382 516 403 503 421 514
+           L589 617
+           C607 628 607 653 589 664
+           L421 767
+           C403 778 382 765 382 745Z"
+        fill="url(#gold)" filter="url(#softShadow)"/>
+
+  <!-- Subtitle bars -->
+  <rect x="618" y="610" width="250" height="88" rx="30" fill="url(#cream)"/>
+  <rect x="650" y="642" width="186" height="20" rx="10" fill="#0B1423"/>
+
+  <rect x="618" y="720" width="176" height="68" rx="26" fill="#FFD66A"/>
+  <rect x="646" y="744" width="120" height="18" rx="9" fill="#0B1423"/>
+</svg>

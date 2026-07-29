@@ -1,0 +1,31 @@
+[package]
+name = "myna-player-pipeline"
+version = "0.1.0"
+edition = "2024"
+description = "Provider contracts and pipeline state for Myna Player"
+license = "GPL-3.0-or-later"
+
+[features]
+default = []
+native-whisper = ["dep:hound", "dep:whisper-rs"]
+
+[dependencies]
+async-trait = "0.1"
+hound = { version = "3.5", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }
+myna-player-core = { path = "../myna-player-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "=0.16.0", features = ["metal"], optional = true }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+whisper-rs = { version = "=0.16.0", optional = true }
+
+[dev-dependencies]
+hound = "3.5"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

@@ -1,8 +1,12 @@
 /target
 /dist
+/.artifacts
 /.trunk
+/src-tauri/vendor/
 .DS_Store
 *.log
 .env
 .env.*
 !.env.example
+
+/src-tauri/binaries/

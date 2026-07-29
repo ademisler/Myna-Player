@@ -1,0 +1,20 @@
+{
+  "bundle": {
+    "resources": {
+      "vendor/libvlc/plugins/": "vlc/plugins/",
+      "vendor/libvlc/share/": "vlc/share/",
+      "vendor/libvlc/VLC-COPYING.txt": "licenses/VLC-COPYING.txt",
+      "../docs/third-party-licenses.md": "licenses/Myna-Player-Third-Party-Notices.md"
+    },
+    "macOS": {
+      "frameworks": [
+        "vendor/libvlc/lib/libvlc.dylib",
+        "vendor/libvlc/lib/libvlccore.dylib"
+      ],
+      "minimumSystemVersion": "11.0"
+    },
+    "externalBin": [
+      "binaries/whisper-server"
+    ]
+  }
+}

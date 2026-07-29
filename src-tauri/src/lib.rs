@@ -1,98 +1,94 @@
-use subahead_core::{
-    AudioWindowRequest, AudioWindowResult, LookAheadPlan, LookAheadRequest, MediaMetadata,
-    RuntimeStatus, TranscriptionRequest, TranscriptionResult, TranslationBatchRequest,
-    TranslationBatchResult,
+mod commands;
+mod model_manager;
+mod native_surface;
+mod state;
+mod subtitle_io;
+
+use std::sync::{Arc, Mutex};
+
+use myna_player_player::create_default_player;
+use myna_player_providers::{CredentialStore, KeyringCredentialStore, ProviderRegistry};
+use myna_player_storage::Storage;
+use tauri::Manager;
+
+use crate::{
+    model_manager::ModelManager,
+    native_surface::NativeVideoSurface,
+    state::{AppState, ProcessingService, player_clock_loop},
 };
-use tauri::AppHandle;
-use tauri_plugin_dialog::DialogExt;
-
-#[tauri::command]
-async fn pick_video(app: AppHandle) -> Result<Option<String>, String> {
-    let selected = app
-        .dialog()
-        .file()
-        .add_filter(
-            "Video files",
-            &["mp4", "mkv", "avi", "mov", "m4v", "webm", "mpeg", "mpg"],
-        )
-        .blocking_pick_file();
-
-    selected
-        .map(|file| {
-            file.into_path()
-                .map(|path| path.to_string_lossy().into_owned())
-                .map_err(|error| error.to_string())
-        })
-        .transpose()
-}
-
-#[tauri::command]
-async fn inspect_runtime() -> RuntimeStatus {
-    tauri::async_runtime::spawn_blocking(subahead_media::runtime_status)
-        .await
-        .unwrap_or_else(|_| subahead_media::runtime_status())
-}
-
-#[tauri::command]
-async fn probe_media(path: String) -> Result<MediaMetadata, String> {
-    tauri::async_runtime::spawn_blocking(move || subahead_media::probe_media(path))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn plan_lookahead(request: LookAheadRequest) -> LookAheadPlan {
-    subahead_core::plan_lookahead(&request)
-}
-
-#[tauri::command]
-async fn extract_audio_window(request: AudioWindowRequest) -> Result<AudioWindowResult, String> {
-    tauri::async_runtime::spawn_blocking(move || subahead_media::extract_audio_window(&request))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn transcribe_audio(request: TranscriptionRequest) -> Result<TranscriptionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        subahead_pipeline::transcribe_with_whisper_cli(&request)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn translate_segments(
-    mut request: TranslationBatchRequest,
-) -> Result<TranslationBatchResult, String> {
-    if request.api_key.trim().is_empty() {
-        if let Ok(api_key) = std::env::var("DEEPL_AUTH_KEY") {
-            request.api_key = api_key;
-        }
-    }
-
-    subahead_pipeline::translate_with_deepl(&request)
-        .await
-        .map_err(|error| error.to_string())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let main_window = app
+                .get_webview_window("main")
+                .ok_or_else(|| "main window was not created".to_string())?;
+            let native_surface =
+                NativeVideoSurface::create(&main_window).map_err(std::io::Error::other)?;
+            let player: Arc<dyn myna_player_player::PlayerEngine> =
+                Arc::from(create_default_player());
+            if player.available() {
+                player
+                    .attach_surface(native_surface.handle())
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+            }
+
+            let app_data = app.path().app_data_dir()?;
+            let storage = Arc::new(
+                Storage::open(app_data.join("myna-player.sqlite3"))
+                    .map_err(|error| std::io::Error::other(error.to_string()))?,
+            );
+            let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringCredentialStore);
+            let model_manager = Arc::new(
+                ModelManager::new(app_data.join("models")).map_err(std::io::Error::other)?,
+            );
+            let processing = Arc::new(ProcessingService::new(
+                Arc::clone(&storage),
+                Arc::clone(&credentials),
+            ));
+            let state = Arc::new(AppState {
+                player,
+                storage,
+                credentials,
+                providers: ProviderRegistry::default(),
+                model_manager,
+                processing,
+                player_subscribers: Mutex::new(Vec::new()),
+                native_surface_handle: native_surface.handle(),
+            });
+            app.manage(Arc::clone(&state));
+            tauri::async_runtime::spawn(player_clock_loop(state));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            pick_video,
-            inspect_runtime,
-            probe_media,
-            plan_lookahead,
-            extract_audio_window,
-            transcribe_audio,
-            translate_segments
+            commands::pick_video,
+            commands::inspect_runtime,
+            commands::list_models,
+            commands::install_model,
+            commands::verify_model,
+            commands::delete_model,
+            commands::export_subtitles,
+            commands::update_subtitle_cue,
+            commands::open_media,
+            commands::player_snapshot,
+            commands::player_command,
+            commands::subscribe_player_events,
+            commands::processing_snapshot,
+            commands::processing_command,
+            commands::subscribe_processing_events,
+            commands::get_settings,
+            commands::save_settings,
+            commands::list_providers,
+            commands::credential_status,
+            commands::set_provider_credential,
+            commands::delete_provider_credential,
+            commands::set_video_surface_rect,
+            commands::toggle_fullscreen,
+            commands::show_main_window,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running SubAhead");
+        .expect("error while running Myna Player");
 }

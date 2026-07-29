@@ -1,4 +1,4 @@
-# SubAhead engineering rules
+# Myna Player engineering rules
 
 - Keep media processing, scheduling, providers, storage, and UI in separate crates or modules.
 - Never build shell command strings from user-controlled paths. Pass process arguments separately.
