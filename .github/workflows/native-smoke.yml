@@ -46,7 +46,7 @@ jobs:
           MYNA_PLAYER_VLC_PLUGIN_PATH="$app/Contents/Resources/vlc/plugins" \
           MYNA_PLAYER_TEST_MEDIA="$RUNNER_TEMP/myna-smoke.mp4" \
             cargo test -p myna-player-player vlc::tests::exercises_real_playback_controls_and_eof -- --ignored --exact
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: myna-player-macos-arm64-smoke
           path: target/aarch64-apple-darwin/release/bundle/macos/Myna Player.app
@@ -102,7 +102,7 @@ jobs:
           foreach ($license in @("Myna-Player-GPL-3.0.txt", "VLC-COPYING.txt", "FFmpeg-LICENSE.md", "whisper.cpp-LICENSE.txt")) {
             if (-not (Get-ChildItem $extract -Recurse -Filter $license | Select-Object -First 1)) { throw "$license is missing" }
           }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: myna-player-windows-x64-smoke
           path: |
