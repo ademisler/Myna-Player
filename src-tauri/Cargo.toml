@@ -14,22 +14,21 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
-tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "fs", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
-myna-player-core = { path = "../crates/myna-player-core" }
-myna-player-jobs = { path = "../crates/myna-player-jobs" }
-myna-player-media = { path = "../crates/myna-player-media" }
-myna-player-pipeline = { path = "../crates/myna-player-pipeline" }
-myna-player-player = { path = "../crates/myna-player-player" }
-myna-player-providers = { path = "../crates/myna-player-providers" }
-myna-player-storage = { path = "../crates/myna-player-storage" }
+myna-player-core = { path = "../crates/myna-player-core", version = "0.1.0" }
+myna-player-jobs = { path = "../crates/myna-player-jobs", version = "0.1.0" }
+myna-player-media = { path = "../crates/myna-player-media", version = "0.1.0" }
+myna-player-pipeline = { path = "../crates/myna-player-pipeline", version = "0.1.0" }
+myna-player-player = { path = "../crates/myna-player-player", version = "0.1.0" }
+myna-player-providers = { path = "../crates/myna-player-providers", version = "0.1.0" }
+myna-player-storage = { path = "../crates/myna-player-storage", version = "0.1.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -42,3 +41,6 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_LibraryLoader",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+tempfile = "3"

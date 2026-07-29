@@ -1,0 +1,60 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust-and-web:
+    name: Rust, Clippy and Leptos
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+          components: rustfmt,clippy
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+        with:
+          tool: trunk@0.21.14
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Workspace tests with every feature
+        run: cargo test --workspace --all-features
+      - name: Clippy without warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Leptos release build
+        run: trunk build --release
+
+  dependency-policy:
+    name: Advisories, licenses and sources
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check licenses bans sources advisories
+
+  windows-compile:
+    name: Windows native compile
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+          targets: x86_64-pc-windows-msvc
+      - run: cargo check --workspace --all-features --target x86_64-pc-windows-msvc

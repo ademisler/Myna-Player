@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use myna_player_core::{
-    AppSettingsV1, CredentialStatus, MediaMetadata, ModelDescriptor, PlayerCommand, PlayerEvent,
-    PlayerSnapshot, ProcessingCommand, ProcessingEvent, ProcessingSnapshot, ProviderDescriptor,
-    RuntimeStatus, SubtitleEditRequest, SubtitleExportFormat, SubtitleExportTrack, TrackKind,
-    VideoSurfaceRect,
+    AppSettingsV1, CredentialStatus, DiagnosticSnapshot, MediaMetadata, ModelDescriptor,
+    PlayerCommand, PlayerEvent, PlayerSnapshot, ProcessingCommand, ProcessingEvent,
+    ProcessingSnapshot, ProviderDescriptor, RuntimeStatus, SubtitleEditRequest,
+    SubtitleExportFormat, SubtitleExportTrack, TrackKind, VideoSurfaceRect,
 };
 use myna_player_storage::media_identity;
 use serde::Serialize;
@@ -49,6 +49,11 @@ pub async fn inspect_runtime() -> RuntimeStatus {
     tauri::async_runtime::spawn_blocking(myna_player_media::runtime_status)
         .await
         .unwrap_or_else(|_| myna_player_media::runtime_status())
+}
+
+#[tauri::command]
+pub fn diagnostic_snapshot(state: State<'_, Arc<AppState>>) -> DiagnosticSnapshot {
+    state.processing.diagnostics()
 }
 
 #[tauri::command]
@@ -137,7 +142,7 @@ pub async fn open_media(
     state: State<'_, Arc<AppState>>,
 ) -> Result<OpenMediaResult, String> {
     let probe_path = path.clone();
-    let metadata =
+    let mut metadata =
         tauri::async_runtime::spawn_blocking(move || myna_player_media::probe_media(probe_path))
             .await
             .map_err(|error| error.to_string())?
@@ -177,9 +182,41 @@ pub async fn open_media(
             })
             .map_err(|error| error.to_string())?;
     }
-    let processing = state
-        .processing
-        .prepare(&metadata, identity, settings, 0, resumed_at_ms)?;
+    let audio_mapping = crate::state::match_audio_tracks(&metadata, &player);
+    for stream in &mut metadata.audio_streams {
+        stream.player_track_id = audio_mapping.iter().find_map(|(player_id, relative)| {
+            (*relative == stream.relative_index).then_some(*player_id)
+        });
+    }
+    let selected_audio_relative = crate::state::preferred_audio_relative_index(
+        &metadata,
+        &player,
+        &settings.playback.preferred_audio_language,
+    );
+    state.set_media_context(metadata.clone(), &player, selected_audio_relative);
+    if let Some(player_track_id) = crate::state::match_audio_tracks(&metadata, &player)
+        .into_iter()
+        .find_map(|(player_id, relative)| {
+            (relative == selected_audio_relative).then_some(player_id)
+        })
+        && !player
+            .tracks
+            .iter()
+            .any(|track| track.id == player_track_id && track.selected)
+        && let Ok(updated) = state.player.command(PlayerCommand::SelectTrack {
+            kind: TrackKind::Audio,
+            id: player_track_id,
+        })
+    {
+        player = updated;
+    }
+    let processing = state.processing.prepare(
+        &metadata,
+        identity,
+        settings,
+        selected_audio_relative,
+        resumed_at_ms,
+    )?;
     state.broadcast_player(player.clone());
 
     Ok(OpenMediaResult {
@@ -218,14 +255,13 @@ pub fn player_command(
     if let Some(position_ms) = seek_position {
         state.processing.seek(position_ms);
     }
-    if let Some(selected_audio_id) = selected_audio_id
-        && let Some(relative_index) = snapshot
-            .tracks
-            .iter()
-            .filter(|track| track.kind == TrackKind::Audio && track.id >= 0)
-            .position(|track| track.id == selected_audio_id)
-    {
-        state.processing.select_audio_track(relative_index as u32)?;
+    if let Some(selected_audio_id) = selected_audio_id {
+        let relative_index = state
+            .audio_relative_for_player_track(&snapshot, selected_audio_id)
+            .ok_or_else(|| {
+                format!("Could not map libVLC audio track {selected_audio_id} to its media stream")
+            })?;
+        state.processing.select_audio_track(relative_index)?;
     }
     state.broadcast_player(snapshot.clone());
     Ok(snapshot)
@@ -298,7 +334,14 @@ pub fn save_settings(
         .storage
         .save_settings(&settings)
         .map_err(|error| error.to_string())?;
-    state.processing.update_settings(settings.clone());
+    state
+        .processing
+        .set_diagnostic_logging(settings.advanced.diagnostic_logging);
+    let selected_audio =
+        state.apply_preferred_audio_language(&settings.playback.preferred_audio_language)?;
+    state
+        .processing
+        .update_settings(settings.clone(), selected_audio)?;
     if settings.translation.auto_start && settings.translation.provider_id != "none" {
         state.processing.translate_now();
     }

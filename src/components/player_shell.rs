@@ -175,7 +175,7 @@ pub fn PlayerShell(
                                         .max(1)
                                         .to_string()
                                 }
-                                step="250"
+                                step="100"
                                 prop:value=move || player.get().position_ms.to_string()
                                 on:change=move |event| {
                                     if let Ok(value) = event_target_value(&event).parse::<u64>() {
@@ -371,9 +371,9 @@ fn find_active_cue(
     preferred_track: &str,
 ) -> Option<ActiveCue> {
     let source_cue = || {
-        source
-            .iter()
-            .find(|segment| position_ms >= segment.start_ms && position_ms < segment.end_ms)
+        active_timed_item(source, position_ms, |segment| {
+            (segment.start_ms, segment.end_ms)
+        })
     };
     if preferred_track == "source" {
         return source_cue().map(|segment| ActiveCue {
@@ -381,9 +381,7 @@ fn find_active_cue(
             secondary: None,
         });
     }
-    if let Some(cue) = translated
-        .iter()
-        .find(|cue| position_ms >= cue.start_ms && position_ms < cue.end_ms)
+    if let Some(cue) = active_timed_item(translated, position_ms, |cue| (cue.start_ms, cue.end_ms))
         && let Some(text) = cue.translated_text.clone()
     {
         return Some(ActiveCue {
@@ -396,6 +394,17 @@ fn find_active_cue(
         secondary: (preferred_track != "source")
             .then(|| "Source transcript · translation not ready".into()),
     })
+}
+
+fn active_timed_item<T>(
+    items: &[T],
+    position_ms: u64,
+    timing: impl Fn(&T) -> (u64, u64),
+) -> Option<&T> {
+    let insertion = items.partition_point(|item| timing(item).0 <= position_ms);
+    let candidate = items.get(insertion.checked_sub(1)?)?;
+    let (start_ms, end_ms) = timing(candidate);
+    (position_ms >= start_ms && position_ms < end_ms).then_some(candidate)
 }
 
 fn control_class(base: &str, visible: bool, has_media: bool) -> String {
@@ -480,6 +489,44 @@ mod tests {
         let active = find_active_cue(500, &[cue], &[], "dual").unwrap();
         assert_eq!(active.primary, "Merhaba");
         assert_eq!(active.secondary.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn timed_lookup_respects_exact_boundaries_and_gaps() {
+        let cues = vec![
+            TranscriptSegment {
+                id: "one".into(),
+                start_ms: 100,
+                end_ms: 500,
+                text: "one".into(),
+                detected_language: None,
+                language_confidence: None,
+                is_final: true,
+            },
+            TranscriptSegment {
+                id: "two".into(),
+                start_ms: 700,
+                end_ms: 1_000,
+                text: "two".into(),
+                detected_language: None,
+                language_confidence: None,
+                is_final: true,
+            },
+        ];
+        assert!(active_timed_item(&cues, 99, |cue| (cue.start_ms, cue.end_ms)).is_none());
+        assert_eq!(
+            active_timed_item(&cues, 100, |cue| (cue.start_ms, cue.end_ms))
+                .unwrap()
+                .id,
+            "one"
+        );
+        assert!(active_timed_item(&cues, 500, |cue| (cue.start_ms, cue.end_ms)).is_none());
+        assert_eq!(
+            active_timed_item(&cues, 700, |cue| (cue.start_ms, cue.end_ms))
+                .unwrap()
+                .id,
+            "two"
+        );
     }
 
     #[test]

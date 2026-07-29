@@ -3,10 +3,10 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use myna_player_core::{
-    AppSettingsV1, CredentialStatus, MediaMetadata, ModelDescriptor, PlayerCommand, PlayerEvent,
-    PlayerSnapshot, PlayerState, ProcessingCommand, ProcessingEvent, ProcessingSnapshot,
-    ProcessingStage, ProviderDescriptor, RuntimeStatus, SubtitleEditRequest, SubtitleExportFormat,
-    SubtitleExportTrack, TrackKind,
+    AppSettingsV1, CredentialStatus, DiagnosticSnapshot, MediaMetadata, ModelDescriptor,
+    PlayerCommand, PlayerEvent, PlayerSnapshot, PlayerState, ProcessingCommand, ProcessingEvent,
+    ProcessingPatch, ProcessingSnapshot, ProcessingStage, ProviderDescriptor, RuntimeStatus,
+    SubtitleEditRequest, SubtitleExportFormat, SubtitleExportTrack, TrackKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +85,57 @@ struct CredentialArgs {
     secret: String,
 }
 
+fn apply_processing_patch(snapshot: &mut ProcessingSnapshot, patch: ProcessingPatch) {
+    if !patch.removed_segment_ids.is_empty() {
+        let removed = patch
+            .removed_segment_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
+        snapshot
+            .source_segments
+            .retain(|segment| !removed.contains(&segment.id));
+        snapshot
+            .translated_cues
+            .retain(|cue| !removed.contains(&cue.id));
+    }
+    for segment in patch.source_upserts {
+        if let Some(existing) = snapshot
+            .source_segments
+            .iter_mut()
+            .find(|existing| existing.id == segment.id)
+        {
+            *existing = segment;
+        } else {
+            snapshot.source_segments.push(segment);
+        }
+    }
+    for cue in patch.translated_upserts {
+        if let Some(existing) = snapshot
+            .translated_cues
+            .iter_mut()
+            .find(|existing| existing.id == cue.id)
+        {
+            *existing = cue;
+        } else {
+            snapshot.translated_cues.push(cue);
+        }
+    }
+    snapshot
+        .source_segments
+        .sort_by_key(|segment| (segment.start_ms, segment.end_ms));
+    snapshot
+        .translated_cues
+        .sort_by_key(|cue| (cue.start_ms, cue.end_ms));
+    snapshot.completed_windows = patch.completed_windows;
+    snapshot.total_windows = patch.total_windows;
+    snapshot.ready_until_ms = patch.ready_until_ms;
+    snapshot.stage = patch.stage;
+    snapshot.translation_running = patch.translation_running;
+    snapshot.status_message = patch.status_message;
+    snapshot.error = patch.error;
+    snapshot.translation_error = patch.translation_error;
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let (player, set_player) = signal(PlayerSnapshot::unavailable(
@@ -93,6 +144,7 @@ pub fn App() -> impl IntoView {
     let (processing, set_processing) = signal(ProcessingSnapshot::default());
     let (metadata, set_metadata) = signal::<Option<MediaMetadata>>(None);
     let (runtime, set_runtime) = signal::<Option<RuntimeStatus>>(None);
+    let (diagnostics, set_diagnostics) = signal::<Option<DiagnosticSnapshot>>(None);
     let (providers, set_providers) = signal::<Vec<ProviderDescriptor>>(Vec::new());
     let (models, set_models) = signal::<Vec<ModelDescriptor>>(Vec::new());
     let (model_busy, set_model_busy) = signal::<Option<String>>(None);
@@ -116,6 +168,9 @@ pub fn App() -> impl IntoView {
     });
     subscribe::<ProcessingEvent>("subscribe_processing_events", move |event| match event {
         ProcessingEvent::Snapshot { snapshot } => set_processing.set(snapshot),
+        ProcessingEvent::Patch { patch } => {
+            set_processing.update(|snapshot| apply_processing_patch(snapshot, patch));
+        }
     });
     install_drag_drop::<DragMessage>(move |event| match event.kind.as_str() {
         "over" => set_drop_active.set(true),
@@ -129,6 +184,7 @@ pub fn App() -> impl IntoView {
                     set_processing,
                     set_metadata,
                     set_wants_playing,
+                    settings,
                     set_toast,
                 );
             }
@@ -162,6 +218,7 @@ pub fn App() -> impl IntoView {
             set_runtime.set(Some(status));
         }
     });
+    refresh_diagnostics(set_diagnostics);
 
     let open_picker = Callback::new(move |()| {
         spawn_local(async move {
@@ -172,6 +229,7 @@ pub fn App() -> impl IntoView {
                     set_processing,
                     set_metadata,
                     set_wants_playing,
+                    settings,
                     set_toast,
                 ),
                 Ok(None) => {}
@@ -404,6 +462,7 @@ pub fn App() -> impl IntoView {
         }
         set_model_busy.set(Some(model_id.clone()));
         set_toast.set(Some("Downloading and verifying model…".into()));
+        poll_model_progress(model_id.clone(), set_models);
         spawn_local(async move {
             let result = invoke_typed::<ModelDescriptor, _>(
                 "install_model",
@@ -594,6 +653,7 @@ pub fn App() -> impl IntoView {
             credential=credential
             credential_input=credential_input
             runtime=runtime
+            diagnostics=diagnostics
             models=models
             model_busy=model_busy
             on_install_model=install_model
@@ -635,6 +695,7 @@ fn open_media(
     set_processing: WriteSignal<ProcessingSnapshot>,
     set_metadata: WriteSignal<Option<MediaMetadata>>,
     set_wants_playing: WriteSignal<bool>,
+    settings: RwSignal<AppSettingsV1>,
     set_toast: WriteSignal<Option<String>>,
 ) {
     set_toast.set(Some("Opening video…".into()));
@@ -645,7 +706,11 @@ fn open_media(
                 set_player.set(result.player);
                 set_processing.set(result.processing);
                 set_metadata.set(Some(result.metadata));
-                set_wants_playing.set(false);
+                let current_settings = settings.get_untracked();
+                set_wants_playing.set(
+                    current_settings.playback.autoplay_after_initial_buffer
+                        && current_settings.transcription.auto_start,
+                );
                 set_toast.set(if resumed > 0 {
                     Some(format!("Resumed at {}.", format_time(resumed)))
                 } else {
@@ -711,6 +776,36 @@ fn refresh_credential_status(
     });
 }
 
+fn poll_model_progress(model_id: String, set_models: WriteSignal<Vec<ModelDescriptor>>) {
+    Timeout::new(400, move || {
+        spawn_local(async move {
+            if let Ok(models) =
+                invoke_typed::<Vec<ModelDescriptor>, _>("list_models", &EmptyArgs {}).await
+            {
+                let still_installing = models
+                    .iter()
+                    .any(|model| model.id == model_id && model.installing);
+                set_models.set(models);
+                if still_installing {
+                    poll_model_progress(model_id, set_models);
+                }
+            }
+        });
+    })
+    .forget();
+}
+
+fn refresh_diagnostics(set_diagnostics: WriteSignal<Option<DiagnosticSnapshot>>) {
+    spawn_local(async move {
+        if let Ok(snapshot) =
+            invoke_typed::<DiagnosticSnapshot, _>("diagnostic_snapshot", &EmptyArgs {}).await
+        {
+            set_diagnostics.set(Some(snapshot));
+        }
+        Timeout::new(1_500, move || refresh_diagnostics(set_diagnostics)).forget();
+    });
+}
+
 fn replace_model(models: &mut Vec<ModelDescriptor>, updated: ModelDescriptor) {
     if let Some(existing) = models.iter_mut().find(|model| model.id == updated.id) {
         *existing = updated;
@@ -736,4 +831,63 @@ fn format_time(milliseconds: u64) -> String {
         (seconds % 3_600) / 60,
         seconds % 60
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use myna_player_core::{CueStatus, ProcessingStage, SubtitleCue, TranscriptSegment};
+
+    #[test]
+    fn processing_patch_replaces_removed_cues_and_upserts_translation() {
+        let mut snapshot = ProcessingSnapshot::default();
+        snapshot.source_segments.push(TranscriptSegment {
+            id: "old".into(),
+            start_ms: 0,
+            end_ms: 500,
+            text: "old".into(),
+            detected_language: Some("en".into()),
+            language_confidence: None,
+            is_final: true,
+        });
+        let patch = ProcessingPatch {
+            source_upserts: vec![TranscriptSegment {
+                id: "new".into(),
+                start_ms: 100,
+                end_ms: 900,
+                text: "new".into(),
+                detected_language: Some("en".into()),
+                language_confidence: None,
+                is_final: true,
+            }],
+            translated_upserts: vec![SubtitleCue {
+                id: "new".into(),
+                start_ms: 100,
+                end_ms: 900,
+                source_text: "new".into(),
+                translated_text: Some("yeni".into()),
+                source_language: Some("en".into()),
+                target_language: Some("tr".into()),
+                status: CueStatus::Ready,
+            }],
+            removed_segment_ids: vec!["old".into()],
+            completed_windows: 1,
+            total_windows: 3,
+            ready_until_ms: 30_000,
+            stage: ProcessingStage::Queued,
+            translation_running: true,
+            status_message: "updated".into(),
+            error: None,
+            translation_error: None,
+        };
+        apply_processing_patch(&mut snapshot, patch);
+        assert_eq!(snapshot.source_segments.len(), 1);
+        assert_eq!(snapshot.source_segments[0].id, "new");
+        assert_eq!(
+            snapshot.translated_cues[0].translated_text.as_deref(),
+            Some("yeni")
+        );
+        assert_eq!(snapshot.completed_windows, 1);
+        assert!(snapshot.translation_running);
+    }
 }

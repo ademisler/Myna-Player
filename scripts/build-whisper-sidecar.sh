@@ -10,6 +10,16 @@ work_dir="${MYNA_PLAYER_WHISPER_BUILD_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/myna-
 source_dir="$work_dir/source"
 build_dir="$work_dir/build"
 output_dir="$repo_dir/src-tauri/binaries"
+extension=""
+[[ "$target" == *windows* ]] && extension=".exe"
+destination="$output_dir/whisper-server-$target$extension"
+manifest="$repo_dir/src-tauri/vendor/whisper/BUILD_INFO"
+
+if [[ "${MYNA_PLAYER_FORCE_RUNTIME_REBUILD:-0}" != "1" ]]   && [[ -x "$destination" ]]   && [[ -s "$manifest" ]]   && grep -Fqx "$commit" "$manifest"   && "$destination" --help >/dev/null 2>&1; then
+  printf 'Reusing pinned whisper.cpp %s (%s) sidecar: %s
+' "$version" "$commit" "$destination"
+  exit 0
+fi
 
 rm -rf "$work_dir"
 mkdir -p "$work_dir" "$output_dir"
@@ -40,9 +50,9 @@ cmake --build "$build_dir" --config Release --target whisper-server --parallel
 
 binary="$(find "$build_dir" -type f \( -name whisper-server -o -name whisper-server.exe \) | head -n 1)"
 [[ -n "$binary" && -f "$binary" ]] || { echo "whisper-server build output not found" >&2; exit 4; }
-extension=""
-[[ "$target" == *windows* ]] && extension=".exe"
-destination="$output_dir/whisper-server-$target$extension"
 cp "$binary" "$destination"
 chmod 755 "$destination" 2>/dev/null || true
+mkdir -p "$repo_dir/src-tauri/vendor/whisper"
+cp "$source_dir/LICENSE" "$repo_dir/src-tauri/vendor/whisper/LICENSE.txt"
+printf '%s\n' "$commit" > "$manifest"
 printf 'Built pinned whisper.cpp %s (%s) sidecar: %s\n' "$version" "$commit" "$destination"

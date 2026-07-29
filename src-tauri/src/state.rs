@@ -1,4 +1,8 @@
 use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::Read,
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -7,17 +11,21 @@ use std::{
 };
 
 use myna_player_core::{
-    AppSettingsV1, MediaMetadata, PlayerEvent, PlayerSnapshot, ProcessingEvent, ProcessingSnapshot,
-    ProcessingStage, ProcessingWindow, SubtitleCue, SubtitleEditRequest, TranscriptSegment,
-    TranscriptionRequest, TranslationBatchRequest, TranslationProviderKind,
+    AppSettingsV1, DiagnosticSnapshot, MediaMetadata, PlayerEvent, PlayerSnapshot, ProcessingEvent,
+    ProcessingPatch, ProcessingSnapshot, ProcessingStage, ProcessingWindow, SubtitleCue,
+    SubtitleEditRequest, TranscriptSegment, TranscriptionRequest, TranslationBatchRequest,
+    TranslationProviderKind,
 };
 use myna_player_jobs::{ProcessingQueue, ScheduledWindow};
 use myna_player_player::PlayerEngine;
 use myna_player_providers::{CredentialStore, ProviderRegistry};
 use myna_player_storage::{MediaIdentity, Storage};
+use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
 
-const PIPELINE_VERSION: &str = "stream-v3";
+const PIPELINE_FORMAT_VERSION: &str = "stream-v4";
+const SEGMENTATION_VERSION: &str = "word-timing-dp-v1";
+const WHISPER_RUNTIME_VERSION: &str = "whisper.cpp-v1.9.1-f049fff95a089aa9969deb009cdd4892b3e74916";
 const EXTRACTION_CONTEXT_MS: u64 = 2_000;
 
 pub struct AppState {
@@ -28,10 +36,133 @@ pub struct AppState {
     pub model_manager: Arc<crate::model_manager::ModelManager>,
     pub processing: Arc<ProcessingService>,
     pub player_subscribers: Mutex<Vec<Channel<PlayerEvent>>>,
+    pub current_media: Mutex<Option<MediaMetadata>>,
+    pub audio_track_map: Mutex<HashMap<i32, u32>>,
+    pub pending_audio_relative: Mutex<Option<u32>>,
     pub native_surface_handle: usize,
 }
 
 impl AppState {
+    pub fn set_media_context(
+        &self,
+        metadata: MediaMetadata,
+        snapshot: &PlayerSnapshot,
+        preferred_relative: u32,
+    ) {
+        if let Ok(mut current) = self.current_media.lock() {
+            *current = Some(metadata.clone());
+        }
+        let mapping = match_audio_tracks(&metadata, snapshot);
+        if let Ok(mut stored) = self.audio_track_map.lock() {
+            *stored = mapping.clone();
+        }
+        if let Ok(mut pending) = self.pending_audio_relative.lock() {
+            *pending = (!mapping
+                .values()
+                .any(|relative| *relative == preferred_relative))
+            .then_some(preferred_relative);
+        }
+    }
+
+    pub fn audio_relative_for_player_track(
+        &self,
+        snapshot: &PlayerSnapshot,
+        player_track_id: i32,
+    ) -> Option<u32> {
+        if let Ok(mapping) = self.audio_track_map.lock()
+            && let Some(relative) = mapping.get(&player_track_id)
+        {
+            return Some(*relative);
+        }
+        let metadata = self.current_media.lock().ok()?.clone()?;
+        let mapping = match_audio_tracks(&metadata, snapshot);
+        let relative = mapping.get(&player_track_id).copied();
+        if let Ok(mut stored) = self.audio_track_map.lock() {
+            *stored = mapping;
+        }
+        relative
+    }
+
+    fn apply_pending_audio_selection(&self, snapshot: &PlayerSnapshot) -> Option<PlayerSnapshot> {
+        let pending = self
+            .pending_audio_relative
+            .lock()
+            .ok()
+            .and_then(|value| *value)?;
+        let metadata = self.current_media.lock().ok()?.clone()?;
+        let mapping = match_audio_tracks(&metadata, snapshot);
+        let player_id = mapping
+            .iter()
+            .find_map(|(player_id, relative)| (*relative == pending).then_some(*player_id))?;
+        let selected = snapshot.tracks.iter().any(|track| {
+            track.kind == myna_player_core::TrackKind::Audio
+                && track.id == player_id
+                && track.selected
+        });
+        let updated = if selected {
+            snapshot.clone()
+        } else {
+            self.player
+                .command(myna_player_core::PlayerCommand::SelectTrack {
+                    kind: myna_player_core::TrackKind::Audio,
+                    id: player_id,
+                })
+                .ok()?
+        };
+        if let Ok(mut stored) = self.audio_track_map.lock() {
+            *stored = mapping;
+        }
+        if let Ok(mut value) = self.pending_audio_relative.lock() {
+            *value = None;
+        }
+        Some(updated)
+    }
+
+    pub fn apply_preferred_audio_language(
+        &self,
+        preferred_language: &str,
+    ) -> Result<Option<u32>, String> {
+        let metadata = self
+            .current_media
+            .lock()
+            .map_err(|_| "media metadata lock was poisoned".to_string())?
+            .clone();
+        let Some(metadata) = metadata else {
+            return Ok(None);
+        };
+        let snapshot = self.player.snapshot();
+        let relative = preferred_audio_relative_index(&metadata, &snapshot, preferred_language);
+        let mapping = match_audio_tracks(&metadata, &snapshot);
+        if let Ok(mut stored) = self.audio_track_map.lock() {
+            *stored = mapping.clone();
+        }
+        if let Some(player_id) = mapping
+            .iter()
+            .find_map(|(player_id, stream)| (*stream == relative).then_some(*player_id))
+        {
+            if !snapshot.tracks.iter().any(|track| {
+                track.kind == myna_player_core::TrackKind::Audio
+                    && track.id == player_id
+                    && track.selected
+            }) {
+                let updated = self
+                    .player
+                    .command(myna_player_core::PlayerCommand::SelectTrack {
+                        kind: myna_player_core::TrackKind::Audio,
+                        id: player_id,
+                    })
+                    .map_err(|error| error.to_string())?;
+                self.broadcast_player(updated);
+            }
+            if let Ok(mut pending) = self.pending_audio_relative.lock() {
+                *pending = None;
+            }
+        } else if let Ok(mut pending) = self.pending_audio_relative.lock() {
+            *pending = Some(relative);
+        }
+        Ok(Some(relative))
+    }
+
     pub fn broadcast_player(&self, snapshot: PlayerSnapshot) {
         let Ok(mut subscribers) = self.player_subscribers.lock() else {
             return;
@@ -53,13 +184,15 @@ struct ProcessingSession {
     identity: MediaIdentity,
     duration_ms: u64,
     audio_track: u32,
+    pipeline_key: String,
     settings: AppSettingsV1,
     queue: ProcessingQueue,
     paused: bool,
     worker_running: bool,
+    translation_running: bool,
+    translation_requested: bool,
     playback_position_ms: u64,
     cancel_token: Arc<AtomicBool>,
-    force_translation: bool,
 }
 
 struct ProcessingInner {
@@ -71,21 +204,45 @@ struct ProcessingInner {
 pub struct ProcessingService {
     storage: Arc<Storage>,
     credentials: Arc<dyn CredentialStore>,
+    model_manager: Arc<crate::model_manager::ModelManager>,
     asr: Arc<myna_player_pipeline::PersistentWhisper>,
     inner: Mutex<ProcessingInner>,
 }
 
 impl ProcessingService {
-    pub fn new(storage: Arc<Storage>, credentials: Arc<dyn CredentialStore>) -> Self {
+    pub fn new(
+        storage: Arc<Storage>,
+        credentials: Arc<dyn CredentialStore>,
+        model_manager: Arc<crate::model_manager::ModelManager>,
+    ) -> Self {
         Self {
             storage,
             credentials,
+            model_manager,
             asr: Arc::new(myna_player_pipeline::PersistentWhisper::default()),
             inner: Mutex::new(ProcessingInner {
                 session: None,
                 snapshot: ProcessingSnapshot::default(),
                 subscribers: Vec::new(),
             }),
+        }
+    }
+
+    pub fn set_diagnostic_logging(&self, enabled: bool) {
+        self.asr.set_diagnostic_logging(enabled);
+    }
+
+    pub fn diagnostics(&self) -> DiagnosticSnapshot {
+        let worker = self.asr.diagnostics();
+        DiagnosticSnapshot {
+            diagnostic_logging: worker.logging_enabled,
+            worker_running: worker.worker_running,
+            worker_model_path: worker
+                .model_path
+                .map(|path| path.to_string_lossy().into_owned()),
+            worker_logs: worker.recent_logs,
+            cache_usage_bytes: self.storage.cache_usage_bytes().unwrap_or(0),
+            database_path: self.storage.path().to_string_lossy().into_owned(),
         }
     }
 
@@ -110,6 +267,7 @@ impl ProcessingService {
             generation,
             fingerprint,
             audio_track,
+            pipeline_key,
             duration_ms,
             settings,
             mut source,
@@ -128,6 +286,7 @@ impl ProcessingService {
                 session.queue.generation(),
                 session.identity.fingerprint.clone(),
                 session.audio_track,
+                session.pipeline_key.clone(),
                 session.duration_ms,
                 session.settings.clone(),
                 inner.snapshot.source_segments.clone(),
@@ -185,8 +344,16 @@ impl ProcessingService {
             .store_transcript_segments(
                 &fingerprint,
                 audio_track,
-                PIPELINE_VERSION,
+                &pipeline_key,
                 std::slice::from_ref(&updated_segment),
+            )
+            .map_err(|error| error.to_string())?;
+        self.storage
+            .invalidate_translations_for_segment(
+                &fingerprint,
+                audio_track,
+                &pipeline_key,
+                &updated_segment.id,
             )
             .map_err(|error| error.to_string())?;
         if let Some(cue) = updated_translation.as_ref()
@@ -196,7 +363,7 @@ impl ProcessingService {
                 .store_translations(
                     &fingerprint,
                     audio_track,
-                    PIPELINE_VERSION,
+                    &pipeline_key,
                     &settings.translation.provider_id,
                     &settings.translation.target_language,
                     std::slice::from_ref(cue),
@@ -221,6 +388,41 @@ impl ProcessingService {
         Ok(inner.snapshot.clone())
     }
 
+    fn pipeline_key(&self, settings: &AppSettingsV1) -> Result<String, String> {
+        let whisper = model_identity(
+            settings.transcription.model_path.as_deref(),
+            self.model_manager
+                .list()
+                .into_iter()
+                .find(|model| model.id == "whisper-base"),
+        )?;
+        let vad = if settings.transcription.vad_enabled {
+            model_identity(
+                settings.transcription.vad_model_path.as_deref(),
+                self.model_manager
+                    .list()
+                    .into_iter()
+                    .find(|model| model.id == "silero-vad"),
+            )?
+        } else {
+            "disabled".to_owned()
+        };
+        let payload = serde_json::json!({
+            "format": PIPELINE_FORMAT_VERSION,
+            "segmentation": SEGMENTATION_VERSION,
+            "runtime": WHISPER_RUNTIME_VERSION,
+            "whisperModel": whisper,
+            "vadEnabled": settings.transcription.vad_enabled,
+            "vadModel": vad,
+            "spokenLanguage": settings.transcription.spoken_language,
+            "chunkDurationMs": settings.transcription.chunk_duration_ms,
+            "extractionContextMs": EXTRACTION_CONTEXT_MS,
+        });
+        let encoded = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+        let digest = Sha256::digest(encoded);
+        Ok(format!("{PIPELINE_FORMAT_VERSION}:{digest:x}"))
+    }
+
     pub fn subscribe(&self, channel: Channel<ProcessingEvent>) {
         let snapshot = self.snapshot();
         let _ = channel.send(ProcessingEvent::Snapshot { snapshot });
@@ -238,24 +440,43 @@ impl ProcessingService {
         resume_position_ms: u64,
     ) -> Result<ProcessingSnapshot, String> {
         self.asr.cancel_current();
+        let previous_ephemeral = self.inner.lock().ok().and_then(|inner| {
+            inner.session.as_ref().and_then(|session| {
+                (!session.settings.storage.keep_completed_transcripts
+                    && session.identity.fingerprint != identity.fingerprint)
+                    .then(|| session.identity.fingerprint.clone())
+            })
+        });
+        if let Some(fingerprint) = previous_ephemeral {
+            self.storage
+                .purge_media_cache(&fingerprint)
+                .map_err(|error| error.to_string())?;
+        }
+        self.storage
+            .set_media_cache_policy(
+                &identity.fingerprint,
+                settings.storage.keep_completed_transcripts,
+            )
+            .map_err(|error| error.to_string())?;
+        let pipeline_key = self.pipeline_key(&settings)?;
         let completed = self
             .storage
-            .completed_windows(&identity.fingerprint, audio_track, PIPELINE_VERSION)
+            .completed_windows(&identity.fingerprint, audio_track, &pipeline_key)
             .map_err(|error| error.to_string())?;
         let source_segments = self
             .storage
-            .load_transcript_segments(&identity.fingerprint, audio_track, PIPELINE_VERSION)
+            .load_transcript_segments(&identity.fingerprint, audio_track, &pipeline_key)
             .map_err(|error| error.to_string())?;
         let translated_cues = if settings.translation.provider_id != "none" {
             self.storage
                 .load_translated_cues(
                     &identity.fingerprint,
                     audio_track,
-                    PIPELINE_VERSION,
+                    &pipeline_key,
                     &settings.translation.provider_id,
                     &settings.translation.target_language,
                 )
-                .unwrap_or_default()
+                .map_err(|error| error.to_string())?
         } else {
             Vec::new()
         };
@@ -284,6 +505,8 @@ impl ProcessingService {
             ready_until_ms,
             source_segments,
             translated_cues,
+            translation_running: false,
+            translation_error: None,
             status_message: if settings.transcription.auto_start {
                 "Preparing the first subtitle window…".into()
             } else {
@@ -307,13 +530,15 @@ impl ProcessingService {
                 identity,
                 duration_ms: metadata.duration_ms,
                 audio_track,
+                pipeline_key,
                 settings: settings.clone(),
                 queue,
                 paused: !settings.transcription.auto_start,
                 worker_running: false,
+                translation_running: false,
+                translation_requested: false,
                 playback_position_ms: resume_position_ms,
                 cancel_token: Arc::new(AtomicBool::new(false)),
-                force_translation: false,
             });
             inner.snapshot = snapshot.clone();
             broadcast_processing_locked(&mut inner);
@@ -353,12 +578,37 @@ impl ProcessingService {
         self.prepare(&metadata, identity, settings, audio_track, position_ms)
     }
 
-    pub fn update_settings(&self, settings: AppSettingsV1) {
-        if let Ok(mut inner) = self.inner.lock()
-            && let Some(session) = inner.session.as_mut()
-        {
-            session.settings = settings;
-        }
+    pub fn update_settings(
+        self: &Arc<Self>,
+        settings: AppSettingsV1,
+        selected_audio_track: Option<u32>,
+    ) -> Result<ProcessingSnapshot, String> {
+        let active = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "processing state lock was poisoned".to_string())?;
+            let Some(session) = inner.session.as_mut() else {
+                return Ok(inner.snapshot.clone());
+            };
+            let audio_track = selected_audio_track.unwrap_or(session.audio_track);
+            let needs_restart = audio_track != session.audio_track
+                || processing_settings_changed(&session.settings, &settings);
+            if !needs_restart {
+                session.settings = settings;
+                return Ok(inner.snapshot.clone());
+            }
+            Some((
+                session.metadata.clone(),
+                session.identity.clone(),
+                audio_track,
+                session.playback_position_ms,
+            ))
+        };
+        let Some((metadata, identity, audio_track, position_ms)) = active else {
+            return Ok(self.snapshot());
+        };
+        self.prepare(&metadata, identity, settings, audio_track, position_ms)
     }
 
     pub fn start_or_resume(self: &Arc<Self>) -> ProcessingSnapshot {
@@ -413,14 +663,12 @@ impl ProcessingService {
                 broadcast_processing_locked(&mut inner);
                 return inner.snapshot.clone();
             }
-            session.force_translation = true;
-            session.paused = false;
-            inner.snapshot.stage = ProcessingStage::Queued;
+            session.translation_requested = true;
             inner.snapshot.status_message = "Translation queued…".into();
-            inner.snapshot.error = None;
+            inner.snapshot.translation_error = None;
             broadcast_processing_locked(&mut inner);
         }
-        self.spawn_worker();
+        self.spawn_translation_worker();
         self.snapshot()
     }
 
@@ -518,29 +766,14 @@ impl ProcessingService {
                 if session.paused || session.queue.generation() != generation {
                     return;
                 }
-                if session.force_translation {
-                    session.force_translation = false;
-                    let context = TranslationContext {
-                        session_id: session.session_id.clone(),
-                        fingerprint: session.identity.fingerprint.clone(),
-                        audio_track: session.audio_track,
-                        settings: session.settings.clone(),
-                        generation,
-                    };
-                    inner.snapshot.stage = ProcessingStage::Translating;
-                    inner.snapshot.current_window = None;
-                    inner.snapshot.status_message =
-                        "Translating completed transcript segments…".into();
-                    inner.snapshot.error = None;
-                    broadcast_processing_locked(&mut inner);
-                    WorkerAction::Translate(context)
-                } else if let Some(job) = session.queue.pop() {
+                if let Some(job) = session.queue.pop() {
                     let context = JobContext {
                         session_id: session.session_id.clone(),
                         path: session.path.clone(),
                         fingerprint: session.identity.fingerprint.clone(),
                         duration_ms: session.duration_ms,
                         audio_track: session.audio_track,
+                        pipeline_key: session.pipeline_key.clone(),
                         settings: session.settings.clone(),
                         job: job.clone(),
                         cancel_token: Arc::clone(&session.cancel_token),
@@ -554,7 +787,7 @@ impl ProcessingService {
                     );
                     inner.snapshot.error = None;
                     broadcast_processing_locked(&mut inner);
-                    WorkerAction::Window(context)
+                    WorkerAction::Window(Box::new(context))
                 } else {
                     inner.snapshot.stage = ProcessingStage::Ready;
                     inner.snapshot.current_window = None;
@@ -565,22 +798,13 @@ impl ProcessingService {
             };
 
             let WorkerAction::Window(job_context) = action else {
-                match action {
-                    WorkerAction::Translate(context) => {
-                        if let Err(error) = self.translate_remaining(&context).await {
-                            self.report_translation_error(&context, error);
-                        }
-                        continue;
-                    }
-                    WorkerAction::Finished => return,
-                    WorkerAction::Window(_) => unreachable!(),
-                }
+                return;
             };
 
             if let Err(error) = self.storage.mark_window_running(
                 &job_context.fingerprint,
                 job_context.audio_track,
-                PIPELINE_VERSION,
+                &job_context.pipeline_key,
                 job_context.job.window.start_ms,
                 job_context.job.window.end_ms,
                 generation,
@@ -612,28 +836,96 @@ impl ProcessingService {
         }
     }
 
+    fn spawn_translation_worker(self: &Arc<Self>) {
+        let context = {
+            let Ok(mut inner) = self.inner.lock() else {
+                return;
+            };
+            let context = {
+                let Some(session) = inner.session.as_mut() else {
+                    return;
+                };
+                if session.translation_running
+                    || !session.translation_requested
+                    || session.settings.translation.provider_id == "none"
+                {
+                    return;
+                }
+                session.translation_running = true;
+                session.translation_requested = false;
+                TranslationContext {
+                    session_id: session.session_id.clone(),
+                    fingerprint: session.identity.fingerprint.clone(),
+                    audio_track: session.audio_track,
+                    pipeline_key: session.pipeline_key.clone(),
+                    settings: session.settings.clone(),
+                    generation: session.queue.generation(),
+                }
+            };
+            inner.snapshot.translation_running = true;
+            inner.snapshot.translation_error = None;
+            broadcast_processing_locked(&mut inner);
+            context
+        };
+        let service = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            let result = service.translate_remaining(&context).await;
+            let restart = {
+                let Ok(mut inner) = service.inner.lock() else {
+                    return;
+                };
+                let restart = {
+                    let Some(session) = inner.session.as_mut() else {
+                        return;
+                    };
+                    if session.session_id != context.session_id
+                        || session.queue.generation() != context.generation
+                    {
+                        return;
+                    }
+                    session.translation_running = false;
+                    session.translation_requested
+                };
+                inner.snapshot.translation_running = false;
+                match result {
+                    Ok(()) => inner.snapshot.translation_error = None,
+                    Err(error) => inner.snapshot.translation_error = Some(error),
+                }
+                broadcast_processing_locked(&mut inner);
+                restart
+            };
+            if restart {
+                service.spawn_translation_worker();
+            }
+        });
+    }
+
     async fn translate_remaining(&self, context: &TranslationContext) -> Result<(), String> {
         if context.settings.translation.provider_id == "none" {
             return Err("Select a translation provider first.".into());
         }
         let source = self
             .storage
-            .load_transcript_segments(&context.fingerprint, context.audio_track, PIPELINE_VERSION)
+            .load_transcript_segments(
+                &context.fingerprint,
+                context.audio_track,
+                &context.pipeline_key,
+            )
             .map_err(|error| error.to_string())?;
         let existing = self
             .storage
             .load_translated_cues(
                 &context.fingerprint,
                 context.audio_track,
-                PIPELINE_VERSION,
+                &context.pipeline_key,
                 &context.settings.translation.provider_id,
                 &context.settings.translation.target_language,
             )
-            .unwrap_or_default();
+            .map_err(|error| error.to_string())?;
         let translated_ids = existing
             .iter()
             .map(|cue| cue.id.as_str())
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<HashSet<_>>();
         let pending = source
             .iter()
             .filter(|segment| !translated_ids.contains(segment.id.as_str()))
@@ -642,47 +934,72 @@ impl ProcessingService {
         if pending.is_empty() {
             return Ok(());
         }
-        let cues = self
-            .translate_segments(
-                &context.settings,
-                pending.clone(),
-                pending
-                    .iter()
-                    .find_map(|segment| segment.detected_language.clone()),
-                Vec::new(),
-            )
-            .await?;
-        self.storage
-            .store_translations(
-                &context.fingerprint,
-                context.audio_track,
-                PIPELINE_VERSION,
-                &context.settings.translation.provider_id,
-                &context.settings.translation.target_language,
-                &cues,
-            )
-            .map_err(|error| error.to_string())?;
-        let all_translations = self
-            .storage
-            .load_translated_cues(
-                &context.fingerprint,
-                context.audio_track,
-                PIPELINE_VERSION,
-                &context.settings.translation.provider_id,
-                &context.settings.translation.target_language,
-            )
-            .map_err(|error| error.to_string())?;
-        if let Ok(mut inner) = self.inner.lock()
-            && inner.session.as_ref().is_some_and(|session| {
-                session.session_id == context.session_id
-                    && session.queue.generation() == context.generation
-            })
-        {
-            inner.snapshot.translated_cues = all_translations;
-            inner.snapshot.status_message =
-                format!("Translated {} transcript segment(s).", cues.len());
-            inner.snapshot.error = None;
-            broadcast_processing_locked(&mut inner);
+
+        const TRANSLATION_BATCH_SIZE: usize = 32;
+        let mut translated_count = 0_usize;
+        for batch in pending.chunks(TRANSLATION_BATCH_SIZE) {
+            if !self.is_session_current(&context.session_id, context.generation) {
+                return Ok(());
+            }
+            let first_start = batch.first().map(|segment| segment.start_ms).unwrap_or(0);
+            let previous_context = source
+                .iter()
+                .filter(|segment| segment.end_ms <= first_start)
+                .rev()
+                .take(8)
+                .map(|segment| segment.text.clone())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let cues = self
+                .translate_segments(
+                    &context.settings,
+                    batch.to_vec(),
+                    batch
+                        .iter()
+                        .find_map(|segment| segment.detected_language.clone()),
+                    previous_context,
+                )
+                .await?;
+            if !self.is_session_current(&context.session_id, context.generation) {
+                return Ok(());
+            }
+            self.storage
+                .store_translations(
+                    &context.fingerprint,
+                    context.audio_track,
+                    &context.pipeline_key,
+                    &context.settings.translation.provider_id,
+                    &context.settings.translation.target_language,
+                    &cues,
+                )
+                .map_err(|error| error.to_string())?;
+            translated_count += cues.len();
+            if let Ok(mut inner) = self.inner.lock()
+                && inner.session.as_ref().is_some_and(|session| {
+                    session.session_id == context.session_id
+                        && session.queue.generation() == context.generation
+                })
+            {
+                upsert_translated_cues(&mut inner.snapshot.translated_cues, &cues);
+                inner.snapshot.status_message =
+                    format!("Translated {translated_count} subtitle segment(s)…");
+                let patch = ProcessingPatch {
+                    source_upserts: Vec::new(),
+                    translated_upserts: cues,
+                    removed_segment_ids: Vec::new(),
+                    completed_windows: inner.snapshot.completed_windows,
+                    total_windows: inner.snapshot.total_windows,
+                    ready_until_ms: inner.snapshot.ready_until_ms,
+                    stage: inner.snapshot.stage,
+                    translation_running: true,
+                    status_message: inner.snapshot.status_message.clone(),
+                    error: inner.snapshot.error.clone(),
+                    translation_error: None,
+                };
+                broadcast_processing_patch_locked(&mut inner, patch);
+            }
         }
         Ok(())
     }
@@ -756,20 +1073,6 @@ impl ProcessingService {
         }
     }
 
-    fn report_translation_error(&self, context: &TranslationContext, error: String) {
-        if let Ok(mut inner) = self.inner.lock()
-            && inner.session.as_ref().is_some_and(|session| {
-                session.session_id == context.session_id
-                    && session.queue.generation() == context.generation
-            })
-        {
-            inner.snapshot.status_message =
-                "Source transcript is safe; translation needs attention.".into();
-            inner.snapshot.error = Some(error);
-            broadcast_processing_locked(&mut inner);
-        }
-    }
-
     async fn process_window(&self, context: &JobContext) -> Result<WindowResult, WindowError> {
         let canonical = &context.job.window;
         let extraction_start = canonical.start_ms.saturating_sub(EXTRACTION_CONTEXT_MS);
@@ -813,6 +1116,7 @@ impl ProcessingService {
             prompt: self.previous_context(
                 &context.fingerprint,
                 context.audio_track,
+                &context.pipeline_key,
                 canonical.start_ms,
             ),
         };
@@ -846,126 +1150,118 @@ impl ProcessingService {
             canonical,
             transcription.segments,
         );
-        let mut translated_cues = Vec::new();
-        let mut translation_error = None;
-        if context.settings.translation.auto_start
-            && context.settings.translation.provider_id != "none"
-            && !segments.is_empty()
-        {
-            self.set_stage(
-                ProcessingStage::Translating,
-                format!("Translating {} subtitle segment(s)…", segments.len()),
-            );
-            match self
-                .translate_segments(
-                    &context.settings,
-                    segments.clone(),
-                    transcription.detected_language,
-                    self.previous_context_segments(
-                        &context.fingerprint,
-                        context.audio_track,
-                        canonical.start_ms,
-                    ),
-                )
-                .await
-            {
-                Ok(cues) => translated_cues = cues,
-                Err(error) => translation_error = Some(error),
-            }
-        }
-
-        Ok(WindowResult {
-            segments,
-            translated_cues,
-            translation_error,
-        })
+        Ok(WindowResult { segments })
     }
 
-    fn complete_job(&self, context: &JobContext, result: WindowResult) -> Result<(), String> {
+    fn complete_job(
+        self: &Arc<Self>,
+        context: &JobContext,
+        result: WindowResult,
+    ) -> Result<(), String> {
         self.storage
-            .store_transcript_segments(
+            .replace_window_segments(
                 &context.fingerprint,
                 context.audio_track,
-                PIPELINE_VERSION,
-                &result.segments,
-            )
-            .map_err(|error| error.to_string())?;
-        if !result.translated_cues.is_empty() {
-            self.storage
-                .store_translations(
-                    &context.fingerprint,
-                    context.audio_track,
-                    PIPELINE_VERSION,
-                    &context.settings.translation.provider_id,
-                    &context.settings.translation.target_language,
-                    &result.translated_cues,
-                )
-                .map_err(|error| error.to_string())?;
-        }
-        self.storage
-            .mark_window_completed(
-                &context.fingerprint,
-                context.audio_track,
-                PIPELINE_VERSION,
+                &context.pipeline_key,
                 context.job.window.start_ms,
                 context.job.window.end_ms,
                 context.job.generation,
+                &result.segments,
             )
             .map_err(|error| error.to_string())?;
 
-        let all_segments = self
+        let max_cache_bytes = context
+            .settings
             .storage
-            .load_transcript_segments(&context.fingerprint, context.audio_track, PIPELINE_VERSION)
+            .cache_limit_mb
+            .saturating_mul(1024 * 1024);
+        self.storage
+            .enforce_cache_limit(max_cache_bytes, Some(&context.fingerprint))
             .map_err(|error| error.to_string())?;
-        let all_translations = if context.settings.translation.provider_id != "none" {
-            self.storage
-                .load_translated_cues(
-                    &context.fingerprint,
-                    context.audio_track,
-                    PIPELINE_VERSION,
-                    &context.settings.translation.provider_id,
-                    &context.settings.translation.target_language,
-                )
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
 
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "processing state lock was poisoned".to_string())?;
-        let (completed_windows, total_windows, ready_until_ms) = {
-            let session = inner
-                .session
-                .as_mut()
-                .ok_or_else(|| "processing session disappeared".to_string())?;
-            if session.session_id != context.session_id
-                || session.queue.generation() != context.job.generation
-            {
-                return Ok(());
-            }
-            session.queue.mark_completed(&context.job.window);
-            (
-                session.queue.completed_windows(),
-                session.queue.total_windows(),
-                session.queue.ready_until_from(session.playback_position_ms),
-            )
+        let should_translate = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "processing state lock was poisoned".to_string())?;
+            let (completed_windows, total_windows, ready_until_ms, auto_translate) = {
+                let session = inner
+                    .session
+                    .as_mut()
+                    .ok_or_else(|| "processing session disappeared".to_string())?;
+                if session.session_id != context.session_id
+                    || session.queue.generation() != context.job.generation
+                {
+                    return Ok(());
+                }
+                session.queue.mark_completed(&context.job.window);
+                let auto_translate = session.settings.translation.auto_start
+                    && session.settings.translation.provider_id != "none"
+                    && !result.segments.is_empty();
+                if auto_translate {
+                    session.translation_requested = true;
+                }
+                (
+                    session.queue.completed_windows(),
+                    session.queue.total_windows(),
+                    session.queue.ready_until_from(session.playback_position_ms),
+                    auto_translate,
+                )
+            };
+            let removed_segment_ids = inner
+                .snapshot
+                .source_segments
+                .iter()
+                .filter(|segment| {
+                    segment.start_ms < context.job.window.end_ms
+                        && segment.end_ms > context.job.window.start_ms
+                })
+                .map(|segment| segment.id.clone())
+                .collect::<Vec<_>>();
+            let removed = removed_segment_ids.iter().collect::<HashSet<_>>();
+            inner
+                .snapshot
+                .source_segments
+                .retain(|segment| !removed.contains(&segment.id));
+            inner
+                .snapshot
+                .translated_cues
+                .retain(|cue| !removed.contains(&cue.id));
+            inner
+                .snapshot
+                .source_segments
+                .extend(result.segments.clone());
+            inner
+                .snapshot
+                .source_segments
+                .sort_by_key(|segment| (segment.start_ms, segment.end_ms));
+            inner.snapshot.completed_windows = completed_windows;
+            inner.snapshot.total_windows = total_windows;
+            inner.snapshot.ready_until_ms = ready_until_ms;
+            inner.snapshot.current_window = None;
+            inner.snapshot.stage = ProcessingStage::Queued;
+            inner.snapshot.status_message =
+                format!("Subtitle window ready · {completed_windows}/{total_windows}");
+            inner.snapshot.error = None;
+            let patch = ProcessingPatch {
+                source_upserts: result.segments,
+                translated_upserts: Vec::new(),
+                removed_segment_ids,
+                completed_windows,
+                total_windows,
+                ready_until_ms,
+                stage: inner.snapshot.stage,
+                translation_running: inner.snapshot.translation_running,
+                status_message: inner.snapshot.status_message.clone(),
+                error: None,
+                translation_error: inner.snapshot.translation_error.clone(),
+            };
+            broadcast_processing_patch_locked(&mut inner, patch);
+            auto_translate
         };
-        inner.snapshot.completed_windows = completed_windows;
-        inner.snapshot.total_windows = total_windows;
-        inner.snapshot.ready_until_ms = ready_until_ms;
-        inner.snapshot.source_segments = all_segments;
-        inner.snapshot.translated_cues = all_translations;
-        inner.snapshot.current_window = None;
-        inner.snapshot.stage = ProcessingStage::Queued;
-        inner.snapshot.status_message = if let Some(ref error) = result.translation_error {
-            format!("Transcript saved. Translation needs attention: {error}")
-        } else {
-            format!("Subtitle window ready · {completed_windows}/{total_windows}")
-        };
-        inner.snapshot.error = result.translation_error;
-        broadcast_processing_locked(&mut inner);
+        if should_translate {
+            self.spawn_translation_worker();
+        }
         Ok(())
     }
 
@@ -973,7 +1269,7 @@ impl ProcessingService {
         let _ = self.storage.mark_window_failed(
             &context.fingerprint,
             context.audio_track,
-            PIPELINE_VERSION,
+            &context.pipeline_key,
             context.job.window.start_ms,
             context.job.window.end_ms,
             context.job.generation,
@@ -1003,6 +1299,18 @@ impl ProcessingService {
         }
     }
 
+    fn is_session_current(&self, session_id: &str, generation: u64) -> bool {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| {
+                inner.session.as_ref().map(|session| {
+                    session.session_id == session_id && session.queue.generation() == generation
+                })
+            })
+            .unwrap_or(false)
+    }
+
     fn is_current(&self, session_id: &str, generation: u64) -> bool {
         self.inner
             .lock()
@@ -1029,9 +1337,10 @@ impl ProcessingService {
         &self,
         fingerprint: &str,
         audio_track: u32,
+        pipeline_key: &str,
         before_ms: u64,
     ) -> Option<String> {
-        self.previous_context_segments(fingerprint, audio_track, before_ms)
+        self.previous_context_segments(fingerprint, audio_track, pipeline_key, before_ms)
             .last()
             .cloned()
     }
@@ -1040,10 +1349,11 @@ impl ProcessingService {
         &self,
         fingerprint: &str,
         audio_track: u32,
+        pipeline_key: &str,
         before_ms: u64,
     ) -> Vec<String> {
         self.storage
-            .load_transcript_segments(fingerprint, audio_track, PIPELINE_VERSION)
+            .load_transcript_segments(fingerprint, audio_track, pipeline_key)
             .unwrap_or_default()
             .into_iter()
             .filter(|segment| segment.end_ms <= before_ms)
@@ -1064,6 +1374,7 @@ struct JobContext {
     fingerprint: String,
     duration_ms: u64,
     audio_track: u32,
+    pipeline_key: String,
     settings: AppSettingsV1,
     job: ScheduledWindow,
     cancel_token: Arc<AtomicBool>,
@@ -1073,20 +1384,18 @@ struct TranslationContext {
     session_id: String,
     fingerprint: String,
     audio_track: u32,
+    pipeline_key: String,
     settings: AppSettingsV1,
     generation: u64,
 }
 
 enum WorkerAction {
-    Window(JobContext),
-    Translate(TranslationContext),
+    Window(Box<JobContext>),
     Finished,
 }
 
 struct WindowResult {
     segments: Vec<TranscriptSegment>,
-    translated_cues: Vec<SubtitleCue>,
-    translation_error: Option<String>,
 }
 
 enum WindowError {
@@ -1127,6 +1436,198 @@ fn canonical_segments(
         .collect()
 }
 
+fn processing_settings_changed(old: &AppSettingsV1, new: &AppSettingsV1) -> bool {
+    old.transcription.auto_start != new.transcription.auto_start
+        || old.transcription.spoken_language != new.transcription.spoken_language
+        || old.transcription.model_path != new.transcription.model_path
+        || old.transcription.vad_enabled != new.transcription.vad_enabled
+        || old.transcription.vad_model_path != new.transcription.vad_model_path
+        || old.transcription.chunk_duration_ms != new.transcription.chunk_duration_ms
+        || old.transcription.lookahead_ms != new.transcription.lookahead_ms
+        || old.transcription.process_full_media != new.transcription.process_full_media
+        || old.translation.provider_id != new.translation.provider_id
+        || old.translation.endpoint != new.translation.endpoint
+        || old.translation.model != new.translation.model
+        || old.translation.target_language != new.translation.target_language
+        || old.storage.keep_completed_transcripts != new.storage.keep_completed_transcripts
+        || old.storage.cache_limit_mb != new.storage.cache_limit_mb
+}
+
+pub(crate) fn preferred_audio_relative_index(
+    metadata: &MediaMetadata,
+    snapshot: &PlayerSnapshot,
+    preferred_language: &str,
+) -> u32 {
+    let preferred = normalize_language(preferred_language);
+    if preferred_language != "auto"
+        && let Some(stream) = metadata.audio_streams.iter().find(|stream| {
+            stream
+                .language
+                .as_deref()
+                .map(normalize_language)
+                .is_some_and(|language| language == preferred)
+                || stream
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| normalize_text(title).contains(&preferred))
+        })
+    {
+        return stream.relative_index;
+    }
+    let mapping = match_audio_tracks(metadata, snapshot);
+    snapshot
+        .tracks
+        .iter()
+        .find(|track| track.kind == myna_player_core::TrackKind::Audio && track.selected)
+        .and_then(|track| mapping.get(&track.id).copied())
+        .or_else(|| {
+            metadata
+                .audio_streams
+                .first()
+                .map(|stream| stream.relative_index)
+        })
+        .unwrap_or(0)
+}
+
+pub(crate) fn match_audio_tracks(
+    metadata: &MediaMetadata,
+    snapshot: &PlayerSnapshot,
+) -> HashMap<i32, u32> {
+    let player_tracks = snapshot
+        .tracks
+        .iter()
+        .filter(|track| track.kind == myna_player_core::TrackKind::Audio && track.id >= 0)
+        .collect::<Vec<_>>();
+    let mut mapping = HashMap::new();
+    let mut used = HashSet::new();
+    for track in &player_tracks {
+        let label = normalize_text(&track.label);
+        let language = track.language.as_deref().map(normalize_language);
+        let mut candidates = metadata
+            .audio_streams
+            .iter()
+            .filter(|stream| !used.contains(&stream.relative_index))
+            .map(|stream| {
+                let mut score = 0_i32;
+                if let (Some(player_language), Some(stream_language)) = (
+                    language.as_deref(),
+                    stream
+                        .language
+                        .as_deref()
+                        .map(normalize_language)
+                        .as_deref(),
+                ) && player_language == stream_language
+                {
+                    score += 100;
+                }
+                if let Some(stream_language) = stream.language.as_deref().map(normalize_language)
+                    && !stream_language.is_empty()
+                    && label.contains(&stream_language)
+                {
+                    score += 40;
+                }
+                if let Some(title) = stream.title.as_deref() {
+                    let title = normalize_text(title);
+                    if !title.is_empty() && (label.contains(&title) || title.contains(&label)) {
+                        score += 60;
+                    }
+                }
+                (score, stream.relative_index)
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| right.cmp(left));
+        if let Some((score, relative)) = candidates.first().copied()
+            && score > 0
+        {
+            mapping.insert(track.id, relative);
+            used.insert(relative);
+        }
+    }
+    let remaining_players = player_tracks
+        .iter()
+        .filter(|track| !mapping.contains_key(&track.id))
+        .map(|track| track.id)
+        .collect::<Vec<_>>();
+    let remaining_streams = metadata
+        .audio_streams
+        .iter()
+        .filter(|stream| !used.contains(&stream.relative_index))
+        .map(|stream| stream.relative_index)
+        .collect::<Vec<_>>();
+    for (player_id, relative_index) in remaining_players.into_iter().zip(remaining_streams) {
+        mapping.insert(player_id, relative_index);
+    }
+    mapping
+}
+
+fn normalize_language(value: &str) -> String {
+    let value = value.trim().to_ascii_lowercase().replace('_', "-");
+    match value.split('-').next().unwrap_or("") {
+        "eng" | "english" => "en".into(),
+        "fra" | "fre" | "french" => "fr".into(),
+        "tur" | "turkish" => "tr".into(),
+        "deu" | "ger" | "german" => "de".into(),
+        "spa" | "spanish" => "es".into(),
+        "ita" | "italian" => "it".into(),
+        "por" | "portuguese" => "pt".into(),
+        other => other.to_owned(),
+    }
+}
+
+fn normalize_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn model_identity(
+    configured_path: Option<&str>,
+    catalog: Option<myna_player_core::ModelDescriptor>,
+) -> Result<String, String> {
+    if let Some(path) = configured_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        return sha256_file(Path::new(path));
+    }
+    match catalog {
+        Some(model) if model.installed && model.verified => Ok(model.sha256),
+        Some(model) if model.installed => Err(format!(
+            "{} is installed but failed verification",
+            model.display_name
+        )),
+        Some(model) => Ok(format!("missing:{}:{}", model.id, model.sha256)),
+        None => Ok("missing:unknown".into()),
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path)
+        .map_err(|error| format!("could not open model {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("could not hash model {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 fn provider_environment_credential(provider_id: &str) -> Option<String> {
     let variable = match provider_id {
         "deepl" => "DEEPL_AUTH_KEY",
@@ -1145,9 +1646,9 @@ fn provider_environment_credential(provider_id: &str) -> Option<String> {
 fn default_provider_model(provider_id: &str) -> &'static str {
     match provider_id {
         "openai" => "gpt-5-mini",
-        "gemini" => "gemini-3.6-flash",
+        "gemini" => "gemini-3.5-flash",
         "openrouter" => "openai/gpt-4.1-mini",
-        "minimax" => "MiniMax-M2.7",
+        "minimax" => "MiniMax-M3",
         _ => "",
     }
 }
@@ -1161,6 +1662,27 @@ fn provider_display_name(provider_id: &str) -> &str {
         "minimax" => "MiniMax",
         _ => provider_id,
     }
+}
+
+fn upsert_translated_cues(target: &mut Vec<SubtitleCue>, cues: &[SubtitleCue]) {
+    for cue in cues {
+        if let Some(existing) = target.iter_mut().find(|existing| existing.id == cue.id) {
+            *existing = cue.clone();
+        } else {
+            target.push(cue.clone());
+        }
+    }
+    target.sort_by_key(|cue| (cue.start_ms, cue.end_ms));
+}
+
+fn broadcast_processing_patch_locked(inner: &mut ProcessingInner, patch: ProcessingPatch) {
+    inner.subscribers.retain(|channel| {
+        channel
+            .send(ProcessingEvent::Patch {
+                patch: patch.clone(),
+            })
+            .is_ok()
+    });
 }
 
 fn broadcast_processing_locked(inner: &mut ProcessingInner) {
@@ -1182,15 +1704,18 @@ fn format_time(milliseconds: u64) -> String {
 pub async fn player_clock_loop(state: Arc<AppState>) {
     let mut ticks = 0_u8;
     loop {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let snapshot = state.player.snapshot();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut snapshot = state.player.snapshot();
+        if let Some(updated) = state.apply_pending_audio_selection(&snapshot) {
+            snapshot = updated;
+        }
         state
             .processing
             .update_playback_position(snapshot.position_ms);
         state.broadcast_player(snapshot.clone());
 
         ticks = ticks.wrapping_add(1);
-        if ticks.is_multiple_of(20)
+        if ticks.is_multiple_of(50)
             && let Some(fingerprint) = state.processing.inner.lock().ok().and_then(|inner| {
                 inner
                     .session
@@ -1245,6 +1770,128 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].start_ms, 30_000);
         assert_eq!(segments[0].text, "boundary");
+    }
+
+    #[test]
+    fn processing_restarts_only_for_settings_that_change_cached_or_queued_work() {
+        let base = AppSettingsV1::default();
+        let mut subtitle_only = base.clone();
+        subtitle_only.subtitles.font_scale = 1.4;
+        assert!(!processing_settings_changed(&base, &subtitle_only));
+
+        let mut language = base.clone();
+        language.transcription.spoken_language = "fr".into();
+        assert!(processing_settings_changed(&base, &language));
+
+        let mut provider = base.clone();
+        provider.translation.provider_id = "deepl".into();
+        assert!(processing_settings_changed(&base, &provider));
+    }
+
+    #[test]
+    fn preferred_language_and_track_metadata_choose_the_same_audio_stream() {
+        let metadata = MediaMetadata {
+            path: "/tmp/movie.mkv".into(),
+            file_name: "movie.mkv".into(),
+            duration_ms: 60_000,
+            size_bytes: Some(1),
+            format_name: Some("matroska".into()),
+            video_streams: Vec::new(),
+            audio_streams: vec![
+                myna_player_core::AudioStream {
+                    index: 1,
+                    relative_index: 0,
+                    codec: Some("aac".into()),
+                    channels: Some(2),
+                    sample_rate: Some(48_000),
+                    language: Some("eng".into()),
+                    title: Some("English".into()),
+                    player_track_id: None,
+                },
+                myna_player_core::AudioStream {
+                    index: 2,
+                    relative_index: 1,
+                    codec: Some("aac".into()),
+                    channels: Some(2),
+                    sample_rate: Some(48_000),
+                    language: Some("tur".into()),
+                    title: Some("Turkish dub".into()),
+                    player_track_id: None,
+                },
+            ],
+            subtitle_streams: Vec::new(),
+        };
+        let snapshot = PlayerSnapshot {
+            available: true,
+            backend: "test".into(),
+            state: myna_player_core::PlayerState::Paused,
+            media_path: Some(metadata.path.clone()),
+            file_name: Some(metadata.file_name.clone()),
+            position_ms: 0,
+            duration_ms: metadata.duration_ms,
+            volume: 100,
+            muted: false,
+            rate: 1.0,
+            tracks: vec![
+                myna_player_core::TrackDescriptor {
+                    id: 10,
+                    kind: myna_player_core::TrackKind::Audio,
+                    label: "English".into(),
+                    language: Some("en".into()),
+                    selected: true,
+                },
+                myna_player_core::TrackDescriptor {
+                    id: 21,
+                    kind: myna_player_core::TrackKind::Audio,
+                    label: "Turkish dub".into(),
+                    language: Some("tr".into()),
+                    selected: false,
+                },
+            ],
+            error: None,
+        };
+        let mapping = match_audio_tracks(&metadata, &snapshot);
+        assert_eq!(mapping.get(&10), Some(&0));
+        assert_eq!(mapping.get(&21), Some(&1));
+        assert_eq!(
+            preferred_audio_relative_index(&metadata, &snapshot, "tr"),
+            1
+        );
+        assert_eq!(
+            preferred_audio_relative_index(&metadata, &snapshot, "auto"),
+            0
+        );
+    }
+
+    #[test]
+    fn pipeline_fingerprint_changes_with_model_language_and_chunking() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(directory.path().join("cache.sqlite3")).unwrap());
+        let credentials: Arc<dyn CredentialStore> =
+            Arc::new(myna_player_providers::MemoryCredentialStore::default());
+        let models = Arc::new(
+            crate::model_manager::ModelManager::new(directory.path().join("models")).unwrap(),
+        );
+        let service = ProcessingService::new(storage, credentials, models);
+        let base = AppSettingsV1::default();
+        let base_key = service.pipeline_key(&base).unwrap();
+
+        let mut language = base.clone();
+        language.transcription.spoken_language = "fr".into();
+        assert_ne!(base_key, service.pipeline_key(&language).unwrap());
+
+        let mut chunk = base.clone();
+        chunk.transcription.chunk_duration_ms = 45_000;
+        assert_ne!(base_key, service.pipeline_key(&chunk).unwrap());
+
+        let custom_model = directory.path().join("custom-model.bin");
+        std::fs::write(&custom_model, b"model-v1").unwrap();
+        let mut custom = base.clone();
+        custom.transcription.model_path = Some(custom_model.to_string_lossy().into_owned());
+        let first = service.pipeline_key(&custom).unwrap();
+        std::fs::write(&custom_model, b"model-v2").unwrap();
+        let second = service.pipeline_key(&custom).unwrap();
+        assert_ne!(first, second);
     }
 
     #[test]

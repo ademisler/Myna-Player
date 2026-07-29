@@ -25,10 +25,10 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'none'",
       "assetProtocol": {
-        "enable": true,
-        "scope": ["**"]
+        "enable": false,
+        "scope": []
       }
     }
   },

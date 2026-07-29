@@ -45,7 +45,7 @@ pub fn extract_audio_window(
         request.start_ms, request.duration_ms, nonce
     ));
 
-    let mut command = Command::new("ffmpeg");
+    let mut command = Command::new(crate::ffmpeg_binary());
     command
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .args(["-ss", &format_seconds(request.start_ms)])

@@ -1,46 +1,67 @@
-# Roadmap
+# Delivery status
 
-## Milestone 1 — Desktop and media foundation
+Status meanings:
 
-- [x] Tauri + Leptos application
-- [x] native libVLC 3 player contract and macOS `NSView`
-- [x] local selection and native drag/drop
-- [x] transport, seek, volume, rate, fullscreen, audio/subtitle tracks
-- [x] FFprobe metadata and stream discovery
-- [x] FFmpeg PCM window extraction
-- [x] deterministic priority scheduler with seek generations and EOF behavior
-- [x] SQLite/WAL checkpoints and resume
-- [x] ASR and translation provider interfaces
+- **Implemented**: code exists and is covered by deterministic unit tests.
+- **Integrated**: the feature is exercised through the real native runtime on a development machine.
+- **Packaged**: every required runtime and license is included in the installer.
+- **Release verified**: a signed artifact has passed a clean GitHub-hosted runner.
 
-## Milestone 2 — Local speech recognition
+## Desktop and media foundation
 
-- [x] long-lived whisper.cpp server worker
-- [x] pinned optional `whisper-rs` Metal adapter
-- [x] bundle the worker as a signed Tauri sidecar
-- [x] model download and integrity verification
-- [x] VAD-backed speech region detection
-- [x] word/segment timestamp parsing
-- [x] language detection confidence
-- [x] cancellation after seek
+| Capability | Status |
+| --- | --- |
+| Tauri 2 + Leptos desktop shell | Integrated |
+| macOS libVLC `NSView` surface | Integrated |
+| Windows libVLC child HWND surface | Implemented; clean-runner workflow added |
+| Transport, seek, replay, volume, speed and fullscreen | Integrated |
+| Metadata and stream discovery | Integrated |
+| Language/title-aware audio stream mapping | Implemented and tested |
+| Bundled FFmpeg and FFprobe sidecars | Packaged on macOS arm64; clean macOS/Windows workflows added |
+| Deterministic seek/look-ahead scheduler | Integrated |
 
-## Milestone 3 — Translation
+## Speech and subtitle pipeline
 
-- [x] DeepL adapter
-- [x] OpenAI/OpenRouter adapter
-- [x] Gemini and MiniMax adapters
-- [x] context-aware batch translation
-- [x] explicit source-text-before-translation workflow
-- [x] bounded retry and rate-limit states
-- [x] provider-specific translation persistence
+| Capability | Status |
+| --- | --- |
+| Pinned whisper.cpp sidecar | Integrated and packaged |
+| Optional native Whisper/Metal feature | Compiles with `--all-features` |
+| SHA-256 model installation | Integrated |
+| Download locking and byte progress | Implemented and tested |
+| Silero VAD | Integrated |
+| Word timestamp cue segmentation | Integrated |
+| Dynamic cache fingerprint for model/language/VAD/chunk changes | Implemented and tested |
+| Independent ASR and cloud translation workers | Implemented and tested |
+| Incremental cue patches over Tauri Channels | Implemented and tested |
+| 100 ms player clock and binary-search cue lookup | Implemented and tested |
 
-## Milestone 4 — Subtitle experience
+## Data, privacy and operations
 
-- [x] source, translated, and dual subtitle modes
-- [x] SQLite subtitle cache
-- [x] settings modal with scalable left navigation
-- [x] smart start and explicit Play now
-- [x] SRT/VTT export
-- [x] editing and correction
-- [x] seek-aware queue invalidation
-- [x] signed ARM64 and Intel release automation
-- [x] Windows child HWND runtime and packaging
+| Capability | Status |
+| --- | --- |
+| SQLite/WAL checkpoints | Integrated |
+| Transactional v1 to v2 migration | Implemented and tested |
+| Ephemeral transcript deletion | Implemented and tested |
+| Cache size enforcement | Implemented and tested |
+| Translation invalidation after source edits | Implemented and tested |
+| SRT/VTT export and cue correction | Integrated |
+| Credential storage in the operating-system keychain | Integrated |
+| Bounded worker diagnostics | Implemented and exposed in Settings |
+| Strict CSP and least-privilege capabilities | Implemented |
+| Rust advisory/license/source policy | Enforced by CI |
+
+## Release verification
+
+The following workflows are the source of truth:
+
+- `quality.yml`: formatting, all-feature tests, Clippy, Leptos build,
+  dependency policy and Windows compile checks on pull requests and `main`.
+- `native-smoke.yml`: builds standalone macOS and Windows packages on clean
+  GitHub-hosted runners, checks bundled runtimes/licenses, and exercises libVLC
+  replay on macOS.
+- `release.yml`: requires signing secrets, signs nested runtimes, notarizes
+  macOS artifacts, verifies Authenticode signatures, and publishes SHA-256
+  checksums.
+
+A release is not marked **Release verified** until the corresponding workflow
+has completed successfully with the repository signing secrets configured.

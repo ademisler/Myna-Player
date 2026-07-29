@@ -1,5 +1,7 @@
 use std::{
+    collections::VecDeque,
     env,
+    io::{BufRead, BufReader, Read},
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -25,6 +27,7 @@ use crate::{
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const MAX_WORKER_LOG_LINES: usize = 200;
 
 struct ServerRuntime {
     model_path: PathBuf,
@@ -40,9 +43,63 @@ impl Drop for ServerRuntime {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct WhisperDiagnostics {
+    pub logging_enabled: bool,
+    pub worker_running: bool,
+    pub model_path: Option<PathBuf>,
+    pub recent_logs: Vec<String>,
+}
+
 #[derive(Default)]
+struct WorkerLogBuffer {
+    enabled: AtomicBool,
+    lines: Mutex<VecDeque<String>>,
+}
+
+impl WorkerLogBuffer {
+    fn push(&self, source: &str, line: String) {
+        if !self.enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let line = redact_worker_log(&line);
+        if line.trim().is_empty() {
+            return;
+        }
+        if let Ok(mut lines) = self.lines.lock() {
+            if lines.len() >= MAX_WORKER_LOG_LINES {
+                lines.pop_front();
+            }
+            lines.push_back(format!("[{source}] {}", truncate_log_line(&line)));
+        }
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.lines
+            .lock()
+            .map(|lines| lines.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn clear(&self) {
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.clear();
+        }
+    }
+}
+
 pub struct PersistentWhisper {
     server: Mutex<Option<ServerRuntime>>,
+    logs: Arc<WorkerLogBuffer>,
+}
+
+impl Default for PersistentWhisper {
+    fn default() -> Self {
+        Self {
+            server: Mutex::new(None),
+            logs: Arc::new(WorkerLogBuffer::default()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,6 +302,32 @@ impl PersistentWhisper {
         })
     }
 
+    pub fn set_diagnostic_logging(&self, enabled: bool) {
+        self.logs.enabled.store(enabled, Ordering::Relaxed);
+        if !enabled {
+            self.logs.clear();
+        }
+    }
+
+    pub fn diagnostics(&self) -> WhisperDiagnostics {
+        let (worker_running, model_path) = self
+            .server
+            .lock()
+            .map(|mut server| {
+                server.as_mut().map_or((false, None), |runtime| {
+                    let running = runtime.process.try_wait().ok().flatten().is_none();
+                    (running, running.then(|| runtime.model_path.clone()))
+                })
+            })
+            .unwrap_or((false, None));
+        WhisperDiagnostics {
+            logging_enabled: self.logs.enabled.load(Ordering::Relaxed),
+            worker_running,
+            model_path,
+            recent_logs: self.logs.snapshot(),
+        }
+    }
+
     fn ensure_server(
         &self,
         model_path: &Path,
@@ -304,8 +387,8 @@ impl PersistentWhisper {
                 .arg("120");
         }
         let mut process = command
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
                 PipelineError::AsrUnavailable(format!(
@@ -313,6 +396,12 @@ impl PersistentWhisper {
                     binary.display()
                 ))
             })?;
+        if let Some(stdout) = process.stdout.take() {
+            spawn_worker_log_reader(stdout, "stdout", Arc::clone(&self.logs));
+        }
+        if let Some(stderr) = process.stderr.take() {
+            spawn_worker_log_reader(stderr, "stderr", Arc::clone(&self.logs));
+        }
         let probe = Client::builder()
             .connect_timeout(Duration::from_millis(250))
             .timeout(Duration::from_millis(500))
@@ -355,6 +444,36 @@ impl PersistentWhisper {
         });
         Ok(endpoint)
     }
+}
+
+fn spawn_worker_log_reader<R>(reader: R, source: &'static str, logs: Arc<WorkerLogBuffer>)
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            logs.push(source, line);
+        }
+    });
+}
+
+fn truncate_log_line(value: &str) -> String {
+    const MAX_CHARS: usize = 1_000;
+    if value.chars().count() <= MAX_CHARS {
+        value.to_owned()
+    } else {
+        value.chars().take(MAX_CHARS).collect::<String>() + "..."
+    }
+}
+
+fn redact_worker_log(value: &str) -> String {
+    let mut redacted = value.to_owned();
+    if let Some(home) = env::var_os("HOME").and_then(|value| value.into_string().ok())
+        && !home.is_empty()
+    {
+        redacted = redacted.replace(&home, "~");
+    }
+    redacted
 }
 
 fn inference_fields(language: &str) -> Vec<(&'static str, String)> {
@@ -583,6 +702,22 @@ mod tests {
                 .any(|(key, value)| *key == "language" && value == "auto")
         );
         assert!(!fields.iter().any(|(key, _)| *key == "detect_language"));
+    }
+
+    #[test]
+    fn diagnostic_log_buffer_is_bounded_and_redacts_home() {
+        let logs = WorkerLogBuffer::default();
+        logs.enabled.store(true, Ordering::Relaxed);
+        for index in 0..(MAX_WORKER_LOG_LINES + 10) {
+            logs.push("stderr", format!("line {index}"));
+        }
+        let snapshot = logs.snapshot();
+        assert_eq!(snapshot.len(), MAX_WORKER_LOG_LINES);
+        assert!(
+            snapshot
+                .first()
+                .is_some_and(|line| line.contains("line 10"))
+        );
     }
 
     #[test]

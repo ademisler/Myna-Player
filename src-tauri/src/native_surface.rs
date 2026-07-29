@@ -27,9 +27,8 @@ impl NativeVideoSurface {
 #[cfg(target_os = "macos")]
 fn create_surface(window: &WebviewWindow) -> Result<usize, String> {
     use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained};
-    use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSColor, NSView, NSWindow, NSWindowOrderingMode,
-    };
+    use objc2_app_kit::{NSColor, NSView, NSWindow, NSWindowOrderingMode};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     let webview_pointer = window.ns_view().map_err(|error| error.to_string())?;
     if webview_pointer.is_null() {
@@ -49,10 +48,11 @@ fn create_surface(window: &WebviewWindow) -> Result<usize, String> {
     // SAFETY: Tauri's webview is attached to its window content view during setup.
     let parent = unsafe { webview.superview() }
         .ok_or_else(|| "Tauri webview has no parent NSView".to_string())?;
-    let video = NSView::initWithFrame(NSView::alloc(mtm), webview.frame());
-    video.setAutoresizingMask(
-        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    let video = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)),
     );
+    video.setHidden(true);
     parent.addSubview_positioned_relativeTo(&video, NSWindowOrderingMode::Below, Some(webview));
 
     Ok(Retained::into_raw(video) as usize)
@@ -75,6 +75,11 @@ fn set_surface_rect(
         .run_on_main_thread(move || {
             // SAFETY: The handle is the leaked application-lifetime NSView created above.
             let surface = unsafe { &*(surface_handle as *const NSView) };
+            if rect.width <= 1.0 || rect.height <= 1.0 {
+                surface.setHidden(true);
+                surface.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)));
+                return;
+            }
             // Web coordinates start at the top-left; AppKit coordinates start at the bottom-left.
             // SAFETY: The application-lifetime surface remains attached to its superview.
             let parent_height = unsafe { surface.superview() }
@@ -85,6 +90,7 @@ fn set_surface_rect(
                 NSPoint::new(rect.x, appkit_y),
                 NSSize::new(rect.width, rect.height),
             ));
+            surface.setHidden(false);
         })
         .map_err(|error| error.to_string())
 }
@@ -95,8 +101,8 @@ fn create_surface(window: &WebviewWindow) -> Result<usize, String> {
     use windows_sys::Win32::{
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, HWND_BOTTOM, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetWindowPos, WS_CHILD,
-            WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+            CreateWindowExW, HWND_BOTTOM, SWP_NOACTIVATE, SetWindowPos, WS_CHILD, WS_CLIPCHILDREN,
+            WS_CLIPSIBLINGS,
         },
     };
 
@@ -112,7 +118,7 @@ fn create_surface(window: &WebviewWindow) -> Result<usize, String> {
             0,
             class.as_ptr(),
             null(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
             0,
             0,
             1,
@@ -131,15 +137,7 @@ fn create_surface(window: &WebviewWindow) -> Result<usize, String> {
     }
     // Keep the video child behind WebView2 so the transparent overlay controls remain usable.
     unsafe {
-        SetWindowPos(
-            child,
-            HWND_BOTTOM,
-            0,
-            0,
-            1,
-            1,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        );
+        SetWindowPos(child, HWND_BOTTOM, 0, 0, 1, 1, SWP_NOACTIVATE);
     }
     Ok(child as usize)
 }
@@ -151,12 +149,14 @@ fn set_surface_rect(
     rect: VideoSurfaceRect,
 ) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        HWND_BOTTOM, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetWindowPos,
+        HWND_BOTTOM, SW_HIDE, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetWindowPos,
+        ShowWindow,
     };
 
     if handle == 0 || rect.width < 0.0 || rect.height < 0.0 {
         return Err("invalid native video surface rectangle".into());
     }
+    let hidden = rect.width <= 1.0 || rect.height <= 1.0;
     let x = rect.x.round() as i32;
     let y = rect.y.round() as i32;
     let width = rect.width.round().max(1.0) as i32;
@@ -165,14 +165,22 @@ fn set_surface_rect(
         .run_on_main_thread(move || {
             // SAFETY: handle is the application-lifetime child HWND created above.
             unsafe {
+                if hidden {
+                    ShowWindow(handle as *mut std::ffi::c_void, SW_HIDE);
+                }
                 SetWindowPos(
                     handle as *mut std::ffi::c_void,
                     HWND_BOTTOM,
-                    x,
-                    y,
-                    width,
-                    height,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    if hidden { 0 } else { x },
+                    if hidden { 0 } else { y },
+                    if hidden { 1 } else { width },
+                    if hidden { 1 } else { height },
+                    SWP_NOACTIVATE
+                        | if hidden {
+                            SWP_HIDEWINDOW
+                        } else {
+                            SWP_SHOWWINDOW
+                        },
                 );
             }
         })

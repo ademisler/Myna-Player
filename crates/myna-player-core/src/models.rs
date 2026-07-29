@@ -30,7 +30,20 @@ pub struct ModelDescriptor {
     pub sha256: String,
     pub installed: bool,
     pub verified: bool,
+    pub installing: bool,
+    pub downloaded_bytes: u64,
     pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticSnapshot {
+    pub diagnostic_logging: bool,
+    pub worker_running: bool,
+    pub worker_model_path: Option<String>,
+    pub worker_logs: Vec<String>,
+    pub cache_usage_bytes: u64,
+    pub database_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -66,6 +79,8 @@ pub struct AudioStream {
     pub sample_rate: Option<u32>,
     pub language: Option<String>,
     pub title: Option<String>,
+    #[serde(default)]
+    pub player_track_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -577,6 +592,8 @@ pub struct ProcessingSnapshot {
     pub ready_until_ms: u64,
     pub source_segments: Vec<TranscriptSegment>,
     pub translated_cues: Vec<SubtitleCue>,
+    pub translation_running: bool,
+    pub translation_error: Option<String>,
     pub status_message: String,
     pub error: Option<String>,
 }
@@ -594,6 +611,8 @@ impl Default for ProcessingSnapshot {
             ready_until_ms: 0,
             source_segments: Vec::new(),
             translated_cues: Vec::new(),
+            translation_running: false,
+            translation_error: None,
             status_message: "Drop a video to begin.".into(),
             error: None,
         }
@@ -614,6 +633,23 @@ pub enum ProcessingCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
+pub struct ProcessingPatch {
+    pub source_upserts: Vec<TranscriptSegment>,
+    pub translated_upserts: Vec<SubtitleCue>,
+    pub removed_segment_ids: Vec<String>,
+    pub completed_windows: usize,
+    pub total_windows: usize,
+    pub ready_until_ms: u64,
+    pub stage: ProcessingStage,
+    pub translation_running: bool,
+    pub status_message: String,
+    pub error: Option<String>,
+    pub translation_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum ProcessingEvent {
     Snapshot { snapshot: ProcessingSnapshot },
+    Patch { patch: ProcessingPatch },
 }

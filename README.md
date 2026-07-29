@@ -59,15 +59,15 @@ Requirements:
 - `wasm32-unknown-unknown` target
 - Trunk
 - Tauri CLI 2
-- FFmpeg and FFprobe
-- whisper.cpp (`whisper-server`) only for development; packaged builds use the pinned Tauri sidecar
+- FFmpeg and FFprobe for unbundled development runs only; packaged builds use pinned sidecars
+- whisper.cpp (`whisper-server`) only for unbundled development runs; packaged builds use the pinned Tauri sidecar
 - models installed from Settings, or a multilingual GGML Whisper model supplied through `MYNA_PLAYER_WHISPER_MODEL`
 - VLC 3 during development, or the staged libVLC bundle described below
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install trunk --locked
-cargo install tauri-cli --version '^2.0.0' --locked
+cargo install trunk --version 0.21.14 --locked
+cargo install tauri-cli --version 2.11.4 --locked
 cargo tauri dev
 ```
 
@@ -75,9 +75,10 @@ Checks:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets
-cargo test --workspace
-env -u NO_COLOR trunk build
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo deny check licenses bans sources advisories
+trunk build --release
 ```
 
 ## macOS libVLC packaging
@@ -104,7 +105,7 @@ Windows packaging is performed on a Windows host:
 ./scripts/package-windows.ps1
 ```
 
-The script verifies VLC 3.0.21, builds the pinned whisper.cpp sidecar, and produces the native Tauri installers. See [`docs/third-party-licenses.md`](docs/third-party-licenses.md) for runtime notices.
+The scripts verify VLC 3.0.21, build pinned Whisper/FFmpeg/FFprobe sidecars, include all runtime licenses, and produce the native Tauri installers. See [`docs/third-party-licenses.md`](docs/third-party-licenses.md) for runtime notices.
 
 ## License
 

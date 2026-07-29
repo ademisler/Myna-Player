@@ -7,11 +7,11 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   macos:
-    name: macOS ${{ matrix.target }}
+    name: Signed macOS ${{ matrix.arch }}
     runs-on: macos-14
     strategy:
       fail-fast: false
@@ -26,59 +26,59 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      MYNA_PLAYER_BUNDLES: app,dmg
     steps:
-      - uses: actions/checkout@v4
-      - name: Require Apple signing secrets
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Require Apple signing and notarization secrets
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          test -n "$APPLE_CERTIFICATE" || { echo "APPLE_CERTIFICATE is required"; exit 1; }
-          test -n "$APPLE_CERTIFICATE_PASSWORD" || { echo "APPLE_CERTIFICATE_PASSWORD is required"; exit 1; }
-          test -n "$APPLE_SIGNING_IDENTITY" || { echo "APPLE_SIGNING_IDENTITY is required"; exit 1; }
-          test -n "$APPLE_ID" || { echo "APPLE_ID is required for notarization"; exit 1; }
-          test -n "$APPLE_PASSWORD" || { echo "APPLE_PASSWORD is required for notarization"; exit 1; }
-          test -n "$APPLE_TEAM_ID" || { echo "APPLE_TEAM_ID is required for notarization"; exit 1; }
-      - uses: apple-actions/import-codesign-certs@v3
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name:-}" || { echo "$name is required" >&2; exit 1; }
+          done
+      - uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.97.1
           targets: wasm32-unknown-unknown,${{ matrix.target }}
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
         with:
-          tool: trunk
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version '^2' --locked
-      - name: Build signed and notarized package
-        shell: bash
+          tool: trunk@0.21.14
+      - name: Install pinned Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build, sign and notarize
         run: ./scripts/package-macos.sh "${{ matrix.arch }}"
-      - name: Verify app signature
+      - name: Verify nested signatures, runtime and notarization
         shell: bash
         run: |
           app="target/${{ matrix.target }}/release/bundle/macos/Myna Player.app"
-          test -d "$app"
+          ./scripts/verify-bundle-macos.sh "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           spctl --assess --type execute --verbose=2 "$app"
-          sidecar="$(find "$app/Contents/MacOS" -maxdepth 1 -name 'whisper-server*' -type f | head -n 1)"
-          test -n "$sidecar"
-          codesign --verify --strict --verbose=2 "$sidecar"
-      - uses: actions/upload-artifact@v4
+          find "$app/Contents/MacOS" "$app/Contents/Frameworks" -type f -perm -111 -print0 | while IFS= read -r -d '' binary; do
+            codesign --verify --strict --verbose=2 "$binary"
+          done
+          xcrun stapler validate "$app"
+          ditto -c -k --keepParent "$app" "target/myna-player-${{ matrix.arch }}.app.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: myna-player-macos-${{ matrix.arch }}
           path: |
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            target/myna-player-${{ matrix.arch }}.app.zip
           if-no-files-found: error
 
   windows:
-    name: Windows x64
+    name: Signed Windows x64
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - name: Require Windows signing secret
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Require Authenticode secrets
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
@@ -86,14 +86,27 @@ jobs:
         run: |
           if (-not $env:WINDOWS_CERTIFICATE_PFX) { throw "WINDOWS_CERTIFICATE_PFX is required" }
           if (-not $env:WINDOWS_CERTIFICATE_PASSWORD) { throw "WINDOWS_CERTIFICATE_PASSWORD is required" }
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.97.1
           targets: wasm32-unknown-unknown,x86_64-pc-windows-msvc
-      - uses: taiki-e/install-action@v2
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         with:
-          tool: trunk
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version '^2' --locked
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            git
+            diffutils
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-yasm
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+        with:
+          tool: trunk@0.21.14
+      - name: Install pinned Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
       - name: Import Authenticode certificate
         id: certificate
         shell: pwsh
@@ -107,11 +120,24 @@ jobs:
           $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $secure
           if (-not $cert.Thumbprint) { throw "Certificate import failed" }
           "thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
-      - name: Stage native runtimes
+      - name: Stage verified runtimes
         shell: pwsh
         run: |
           ./scripts/stage-libvlc-windows.ps1 x86_64
           ./scripts/build-whisper-sidecar-windows.ps1 x86_64-pc-windows-msvc
+          ./scripts/build-ffmpeg-sidecars-windows.ps1 x86_64-pc-windows-msvc
+      - name: Sign staged executables and DLLs
+        shell: pwsh
+        env:
+          THUMBPRINT: ${{ steps.certificate.outputs.thumbprint }}
+        run: |
+          $files = @()
+          $files += Get-ChildItem src-tauri/binaries -Filter *.exe
+          $files += Get-ChildItem src-tauri/vendor/libvlc -Recurse -Filter *.dll
+          foreach ($file in $files) {
+            & signtool sign /sha1 $env:THUMBPRINT /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed: $($file.FullName)" }
+          }
       - name: Build frontend
         run: trunk build --release
       - name: Create signed bundle configuration
@@ -126,21 +152,33 @@ jobs:
           $config.bundle.windows | Add-Member -Force -NotePropertyName timestampUrl -NotePropertyValue "http://timestamp.digicert.com"
           New-Item -ItemType Directory -Force target | Out-Null
           $config | ConvertTo-Json -Depth 20 | Set-Content target/tauri.windows.signed.json
-      - name: Build Authenticode-signed package
-        shell: pwsh
+      - name: Build Authenticode-signed installers
         run: cargo tauri build --target x86_64-pc-windows-msvc --config target/tauri.windows.signed.json
-      - name: Verify signatures and sidecar
+      - name: Verify installer and embedded runtime signatures
         shell: pwsh
         run: |
-          $files = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle -Recurse -Include *.exe,*.msi
-          if (-not $files) { throw "No Windows installers were produced" }
-          foreach ($file in $files) {
+          $bundle = "target/x86_64-pc-windows-msvc/release/bundle"
+          $installers = Get-ChildItem $bundle -Recurse -Include *.exe,*.msi
+          if (-not $installers) { throw "No Windows installers were produced" }
+          foreach ($file in $installers) {
             $signature = Get-AuthenticodeSignature $file.FullName
-            if ($signature.Status -ne "Valid") { throw "Invalid signature on $($file.FullName): $($signature.Status)" }
+            if ($signature.Status -ne "Valid") { throw "Invalid installer signature on $($file.FullName): $($signature.Status)" }
           }
-          $sidecar = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle -Recurse -Filter whisper-server*.exe | Select-Object -First 1
-          if (-not $sidecar) { throw "Whisper sidecar is missing from Windows bundle" }
-      - uses: actions/upload-artifact@v4
+          $nsis = Get-ChildItem (Join-Path $bundle "nsis") -Filter *.exe | Select-Object -First 1
+          $extract = Join-Path $env:RUNNER_TEMP "myna-signed-installer"
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          7z x $nsis.FullName "-o$extract" -y | Out-Null
+          foreach ($prefix in @("ffmpeg", "ffprobe", "whisper-server")) {
+            $binary = Get-ChildItem $extract -Recurse -Filter "$prefix*.exe" | Select-Object -First 1
+            if (-not $binary) { throw "$prefix is missing from the installer" }
+            $signature = Get-AuthenticodeSignature $binary.FullName
+            if ($signature.Status -ne "Valid") { throw "Invalid sidecar signature: $($binary.FullName)" }
+          }
+          foreach ($dll in Get-ChildItem $extract -Recurse -Include libvlc.dll,libvlccore.dll) {
+            $signature = Get-AuthenticodeSignature $dll.FullName
+            if ($signature.Status -ne "Valid") { throw "Invalid libVLC signature: $($dll.FullName)" }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: myna-player-windows-x64
           path: |
@@ -149,16 +187,21 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish GitHub release
+    name: Publish checksummed GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [macos, windows]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: artifacts
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - name: Create SHA-256 checksums
+        working-directory: artifacts
+        run: find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: artifacts/**/*
           generate_release_notes: true

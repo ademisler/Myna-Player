@@ -7,4 +7,4 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-myna-player-core = { path = "../myna-player-core" }
+myna-player-core = { path = "../myna-player-core", version = "0.1.0" }

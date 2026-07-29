@@ -21,7 +21,6 @@ use crate::{
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let main_window = app
                 .get_webview_window("main")
@@ -41,6 +40,9 @@ pub fn run() {
                 Storage::open(app_data.join("myna-player.sqlite3"))
                     .map_err(|error| std::io::Error::other(error.to_string()))?,
             );
+            storage
+                .purge_ephemeral_cache()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringCredentialStore);
             let model_manager = Arc::new(
                 ModelManager::new(app_data.join("models")).map_err(std::io::Error::other)?,
@@ -48,7 +50,12 @@ pub fn run() {
             let processing = Arc::new(ProcessingService::new(
                 Arc::clone(&storage),
                 Arc::clone(&credentials),
+                Arc::clone(&model_manager),
             ));
+            let startup_settings = storage
+                .load_settings()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            processing.set_diagnostic_logging(startup_settings.advanced.diagnostic_logging);
             let state = Arc::new(AppState {
                 player,
                 storage,
@@ -57,15 +64,26 @@ pub fn run() {
                 model_manager,
                 processing,
                 player_subscribers: Mutex::new(Vec::new()),
+                current_media: Mutex::new(None),
+                audio_track_map: Mutex::new(std::collections::HashMap::new()),
+                pending_audio_relative: Mutex::new(None),
                 native_surface_handle: native_surface.handle(),
             });
             app.manage(Arc::clone(&state));
             tauri::async_runtime::spawn(player_clock_loop(state));
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. })
+                && let Some(state) = window.try_state::<Arc<AppState>>()
+            {
+                let _ = state.storage.purge_ephemeral_cache();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::pick_video,
             commands::inspect_runtime,
+            commands::diagnostic_snapshot,
             commands::list_models,
             commands::install_model,
             commands::verify_model,

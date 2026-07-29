@@ -2,9 +2,9 @@ use leptos::prelude::*;
 
 use super::Icon;
 use myna_player_core::{
-    AppSettingsV1, CredentialStatus, MediaMetadata, ModelDescriptor, PlayerSnapshot,
-    ProcessingSnapshot, ProcessingStage, ProviderDescriptor, RuntimeStatus, SubtitleEditRequest,
-    SubtitleExportFormat, SubtitleExportTrack, TrackKind,
+    AppSettingsV1, CredentialStatus, DiagnosticSnapshot, MediaMetadata, ModelDescriptor,
+    PlayerSnapshot, ProcessingSnapshot, ProcessingStage, ProviderDescriptor, RuntimeStatus,
+    SubtitleEditRequest, SubtitleExportFormat, SubtitleExportTrack, TrackKind,
 };
 
 const TABS: [(&str, &str); 8] = [
@@ -29,6 +29,7 @@ pub fn SettingsModal(
     credential: ReadSignal<CredentialStatus>,
     credential_input: RwSignal<String>,
     runtime: ReadSignal<Option<RuntimeStatus>>,
+    diagnostics: ReadSignal<Option<DiagnosticSnapshot>>,
     models: ReadSignal<Vec<ModelDescriptor>>,
     model_busy: ReadSignal<Option<String>>,
     on_install_model: Callback<String>,
@@ -52,7 +53,7 @@ pub fn SettingsModal(
         <Show when=move || open.get()>
             <div class="modal-backdrop" on:click=move |_| on_close.run(())></div>
             <section class="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
-                <aside class="settings-sidebar">
+                <aside class="settings-sidebar" tabindex="0" aria-label="Settings navigation">
                     <div class="settings-brand">
                         <img class="app-glyph" src="myna_player_icon.svg" alt="" aria-hidden="true"/>
                         <div>
@@ -96,7 +97,7 @@ pub fn SettingsModal(
                         <button class="modal-close" title="Close" on:click=move |_| on_close.run(())><Icon name="close"/></button>
                     </header>
 
-                    <div class="settings-scroll">
+                    <div class="settings-scroll" tabindex="0" aria-label="Settings content">
                         <Show when=move || active_tab.get() == "media">
                             <CurrentMediaTab
                                 metadata=metadata
@@ -117,28 +118,6 @@ pub fn SettingsModal(
                                 title="Appearance & language"
                                 description="Defaults that apply to every new media session."
                             >
-                                <SettingRow label="Theme" help="Myna Player currently ships with its cinema-first dark theme.">
-                                    <select
-                                        prop:value=move || draft.get().general.theme
-                                        on:change=move |event| draft.update(|settings| {
-                                            settings.general.theme = event_target_value(&event);
-                                        })
-                                    >
-                                        <option value="dark">"Dark"</option>
-                                        <option value="system">"Follow system"</option>
-                                    </select>
-                                </SettingRow>
-                                <SettingRow label="Interface language" help="Language used by player controls and settings.">
-                                    <select
-                                        prop:value=move || draft.get().general.interface_language
-                                        on:change=move |event| draft.update(|settings| {
-                                            settings.general.interface_language = event_target_value(&event);
-                                        })
-                                    >
-                                        <option value="en">"English"</option>
-                                        <option value="tr">"Türkçe"</option>
-                                    </select>
-                                </SettingRow>
                                 <SettingRow label="My subtitle language" help="Translation target used for newly opened videos.">
                                     <select
                                         prop:value=move || draft.get().general.preferred_subtitle_language
@@ -489,6 +468,9 @@ pub fn SettingsModal(
                                         settings.advanced.diagnostic_logging = value;
                                     }))
                                 />
+                                {move || diagnostics.get().map(|snapshot| view! {
+                                    <DiagnosticCard snapshot=snapshot/>
+                                })}
                             </SettingsSection>
                         </Show>
                     </div>
@@ -513,6 +495,46 @@ pub fn SettingsModal(
 }
 
 #[component]
+fn DiagnosticCard(snapshot: DiagnosticSnapshot) -> impl IntoView {
+    let worker_status = if snapshot.worker_running {
+        "Running".to_owned()
+    } else {
+        "Stopped".to_owned()
+    };
+    let cache_usage = format_bytes(snapshot.cache_usage_bytes);
+    let model_path = snapshot
+        .worker_model_path
+        .unwrap_or_else(|| "No model loaded".into());
+    let logs = if snapshot.diagnostic_logging {
+        if snapshot.worker_logs.is_empty() {
+            view! { <span>"No worker output captured yet."</span> }.into_any()
+        } else {
+            snapshot
+                .worker_logs
+                .into_iter()
+                .map(|line| view! { <span>{line}</span> })
+                .collect_view()
+                .into_any()
+        }
+    } else {
+        view! { <span>"Enable diagnostic logging to capture worker output."</span> }.into_any()
+    };
+    view! {
+        <div class="diagnostic-card">
+            <div class="diagnostic-card__metrics">
+                <Metric label="Whisper worker" value=Signal::derive(move || worker_status.clone())/>
+                <Metric label="Transcript cache" value=Signal::derive(move || cache_usage.clone())/>
+            </div>
+            <small>{model_path}</small>
+            <code>{snapshot.database_path}</code>
+            <div class="diagnostic-log" aria-label="Recent Whisper worker logs">
+                {logs}
+            </div>
+        </div>
+    }
+}
+
+#[component]
 fn ModelCard(
     model: ModelDescriptor,
     model_busy: ReadSignal<Option<String>>,
@@ -522,6 +544,14 @@ fn ModelCard(
 ) -> impl IntoView {
     let installed = model.installed;
     let verified = model.verified;
+    let installing = model.installing;
+    let downloaded_bytes = model.downloaded_bytes;
+    let size_bytes = model.size_bytes;
+    let progress_percent = if size_bytes == 0 {
+        0.0
+    } else {
+        (downloaded_bytes as f64 / size_bytes as f64 * 100.0).clamp(0.0, 100.0)
+    };
     let install_id = model.id.clone();
     let busy_id = model.id.clone();
     let verify_id = model.id.clone();
@@ -533,7 +563,9 @@ fn ModelCard(
     } else {
         "model-status"
     };
-    let status_text = if verified {
+    let status_text = if installing {
+        "Downloading"
+    } else if verified {
         "Verified"
     } else if installed {
         "Needs verification"
@@ -551,6 +583,12 @@ fn ModelCard(
                 </div>
                 <small>{model.description}</small>
                 <code>{format!("SHA-256 {}…", &model.sha256[..12])}</code>
+                <Show when=move || installing>
+                    <div class="model-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow=progress_percent.round().to_string()>
+                        <span style=format!("width: {progress_percent:.1}%")></span>
+                    </div>
+                    <small>{format!("{} / {} · {:.0}%", format_bytes(downloaded_bytes), format_bytes(size_bytes), progress_percent)}</small>
+                </Show>
             </div>
             <div class="model-card__actions">
                 {if installed {
@@ -573,7 +611,7 @@ fn ModelCard(
                             disabled=move || model_busy.get().is_some()
                             on:click=move |_| on_install.run(install_id.clone())
                         >
-                            {move || if model_busy.get().as_deref() == Some(busy_id.as_str()) {
+                            {move || if installing || model_busy.get().as_deref() == Some(busy_id.as_str()) {
                                 "Installing…"
                             } else {
                                 "Install"
@@ -636,12 +674,15 @@ fn CurrentMediaTab(
                     </div>
                     <div class="track-list">
                         <small class="group-label">"Audio tracks"</small>
-                        {media.audio_streams.into_iter().enumerate().map(|(position, track)| {
-                            let player_track = player.get().tracks.into_iter()
-                                .filter(|candidate| candidate.kind == TrackKind::Audio && candidate.id >= 0)
-                                .nth(position);
-                            let selected = player_track.as_ref().is_some_and(|candidate| candidate.selected);
-                            let player_track_id = player_track.map(|candidate| candidate.id);
+                        {media.audio_streams.into_iter().map(|track| {
+                            let player_track_id = track.player_track_id;
+                            let selected = player_track_id.is_some_and(|id| {
+                                player.get().tracks.into_iter().any(|candidate| {
+                                    candidate.kind == TrackKind::Audio
+                                        && candidate.id == id
+                                        && candidate.selected
+                                })
+                            });
                             view! {
                             <button
                                 class=if selected { "track-row track-row--selected" } else { "track-row" }
@@ -962,6 +1003,18 @@ fn language_options() -> impl IntoView {
         <option value="PT">"Portuguese"</option>
         <option value="NL">"Dutch"</option>
         <option value="JA">"Japanese"</option>
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1_024 {
+        format!("{:.1} KB", bytes as f64 / 1_024.0)
+    } else {
+        format!("{bytes} B")
     }
 }
 

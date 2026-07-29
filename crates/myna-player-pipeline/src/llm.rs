@@ -24,6 +24,13 @@ struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ChatResponseFormat>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatResponseFormat {
+    r#type: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +127,7 @@ pub async fn translate_with_llm(
                 system,
                 user,
                 false,
+                false,
             )
             .await?
         }
@@ -131,6 +139,7 @@ pub async fn translate_with_llm(
                 system,
                 user,
                 true,
+                false,
             )
             .await?
         }
@@ -142,6 +151,7 @@ pub async fn translate_with_llm(
                 system,
                 user,
                 false,
+                true,
             )
             .await?
         }
@@ -183,6 +193,7 @@ async fn request_openai_compatible(
     system: String,
     user: String,
     openrouter_headers: bool,
+    force_json_object: bool,
 ) -> Result<String, PipelineError> {
     let body = ChatRequest {
         model: request.model.trim().to_owned(),
@@ -198,6 +209,9 @@ async fn request_openai_compatible(
         ],
         // MiniMax rejects zero; a low positive value is accepted across all compatible APIs.
         temperature: 0.1,
+        response_format: force_json_object.then_some(ChatResponseFormat {
+            r#type: "json_object",
+        }),
     };
     let mut builder = client
         .post(endpoint)
@@ -357,7 +371,7 @@ fn map_llm_translations(
     let json = extract_json_object(content).ok_or_else(|| {
         PipelineError::Provider("provider response did not contain a JSON object".into())
     })?;
-    let envelope: TranslationEnvelope = serde_json::from_str(json)
+    let envelope: TranslationEnvelope = serde_json::from_str(&json)
         .map_err(|error| PipelineError::Provider(format!("invalid translation JSON: {error}")))?;
     let expected = request
         .segments
@@ -414,14 +428,37 @@ fn map_llm_translations(
         .collect())
 }
 
-fn extract_json_object(content: &str) -> Option<&str> {
+fn extract_json_object(content: &str) -> Option<String> {
     let without_think = content
         .rsplit_once("</think>")
         .map(|(_, tail)| tail)
         .unwrap_or(content);
-    let start = without_think.find('{')?;
-    let end = without_think.rfind('}')?;
-    (end >= start).then(|| &without_think[start..=end])
+    if let (Some(start), Some(end)) = (without_think.find('{'), without_think.rfind('}'))
+        && end >= start
+    {
+        let candidate = without_think[start..=end].to_owned();
+        if serde_json::from_str::<serde_json::Value>(&candidate).is_ok() {
+            return Some(candidate);
+        }
+    }
+
+    // Some MiniMax reasoning models begin the final JSON immediately before </think>
+    // and continue it after the tag. Recover only the last explicit translation envelope,
+    // strip reasoning boundary control characters, then rely on strict cue-ID validation.
+    let start = content.rfind(r#"{"translations""#)?;
+    let end = content.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    let candidate = content[start..=end]
+        .replace("<think>", "")
+        .replace("</think>", "")
+        .chars()
+        .filter(|character| !matches!(character, '\n' | '\r' | '\t'))
+        .collect::<String>();
+    serde_json::from_str::<serde_json::Value>(&candidate)
+        .is_ok()
+        .then_some(candidate)
 }
 
 fn is_retryable(status: reqwest::StatusCode) -> bool {
@@ -506,8 +543,17 @@ mod tests {
         let content =
             "<think>hidden reasoning</think>\n{\"translations\":[{\"id\":\"a\",\"text\":\"A\"}]}";
         assert_eq!(
-            extract_json_object(content),
+            extract_json_object(content).as_deref(),
             Some(r#"{"translations":[{"id":"a","text":"A"}]}"#)
+        );
+    }
+
+    #[test]
+    fn repairs_minimax_json_split_across_thinking_boundary() {
+        let content = "<think>analysis {\"translations\":[{\"id\":\"cue-</think>\n1\",\"text\":\"Merhaba\"}]}";
+        assert_eq!(
+            extract_json_object(content).as_deref(),
+            Some(r#"{"translations":[{"id":"cue-1","text":"Merhaba"}]}"#)
         );
     }
 }

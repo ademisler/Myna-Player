@@ -55,7 +55,7 @@ pub fn probe_media(path: impl AsRef<Path>) -> Result<MediaMetadata, ProbeError> 
         return Err(ProbeError::MissingFile(path.display().to_string()));
     }
 
-    let output = Command::new("ffprobe")
+    let output = Command::new(crate::ffprobe_binary())
         .args([
             "-v",
             "error",
@@ -103,6 +103,7 @@ pub fn probe_media(path: impl AsRef<Path>) -> Result<MediaMetadata, ProbeError> 
                     sample_rate: stream.sample_rate.and_then(|value| value.parse().ok()),
                     language: tags.language,
                     title: tags.title,
+                    player_track_id: None,
                 });
                 audio_relative_index += 1;
             }

@@ -36,18 +36,33 @@ export async function mynaPlayerInstallDragDrop(callback) {
 export function mynaPlayerInstallVideoSurfaceSync() {
   const sync = () => {
     const viewport = document.querySelector(".video-viewport");
-    if (!viewport) return;
+    const shell = document.querySelector(".player-shell");
+    if (!viewport || !shell) return;
+    const hasMedia = !shell.classList.contains("player-shell--empty");
     const rect = viewport.getBoundingClientRect();
     window.__TAURI__.core.invoke("set_video_surface_rect", {
-      rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
+      rect: hasMedia
+        ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
+        : { x: 0, y: 0, width: 0, height: 0 }
     }).catch((error) => console.error("Could not resize native video surface", error));
   };
-  requestAnimationFrame(sync);
-  const observer = new ResizeObserver(sync);
-  const viewport = document.querySelector(".video-viewport");
-  if (viewport) observer.observe(viewport);
-  window.addEventListener("resize", sync);
-  window.__mynaPlayerSurfaceObserver = observer;
+  const install = () => {
+    const viewport = document.querySelector(".video-viewport");
+    const shell = document.querySelector(".player-shell");
+    if (!viewport || !shell) {
+      requestAnimationFrame(install);
+      return;
+    }
+    sync();
+    const resizeObserver = new ResizeObserver(sync);
+    resizeObserver.observe(viewport);
+    const classObserver = new MutationObserver(sync);
+    classObserver.observe(shell, { attributes: true, attributeFilter: ["class"] });
+    window.addEventListener("resize", sync);
+    window.__mynaPlayerSurfaceObserver = resizeObserver;
+    window.__mynaPlayerSurfaceClassObserver = classObserver;
+  };
+  requestAnimationFrame(install);
 }
 "#)]
 extern "C" {

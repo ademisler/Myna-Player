@@ -1,0 +1,112 @@
+name: Native package smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+
+concurrency:
+  group: native-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    name: Clean macOS arm64 bundle
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+          components: clippy
+          targets: wasm32-unknown-unknown,aarch64-apple-darwin
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+        with:
+          tool: trunk@0.21.14
+      - name: Install pinned Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build standalone app
+        env:
+          MYNA_PLAYER_BUNDLES: app
+        run: ./scripts/package-macos.sh arm64
+      - name: Verify standalone runtime contents
+        run: ./scripts/verify-bundle-macos.sh "target/aarch64-apple-darwin/release/bundle/macos/Myna Player.app"
+      - name: Exercise bundled libVLC playback and replay
+        shell: bash
+        run: |
+          app="target/aarch64-apple-darwin/release/bundle/macos/Myna Player.app"
+          ffmpeg="$(find "$app/Contents/MacOS" -maxdepth 1 -name 'ffmpeg*' -type f | head -n 1)"
+          "$ffmpeg" -hide_banner -loglevel error -f lavfi -i color=size=320x180:rate=25:color=black -f lavfi -i sine=frequency=440:sample_rate=48000 -t 1.5 -shortest -c:v mpeg4 -c:a aac "$RUNNER_TEMP/myna-smoke.mp4"
+          MYNA_PLAYER_LIBVLC_PATH="$app/Contents/Frameworks/libvlc.dylib" \
+          MYNA_PLAYER_VLC_PLUGIN_PATH="$app/Contents/Resources/vlc/plugins" \
+          MYNA_PLAYER_TEST_MEDIA="$RUNNER_TEMP/myna-smoke.mp4" \
+            cargo test -p myna-player-player vlc::tests::exercises_real_playback_controls_and_eof -- --ignored --exact
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: myna-player-macos-arm64-smoke
+          path: target/aarch64-apple-darwin/release/bundle/macos/Myna Player.app
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-x64:
+    name: Clean Windows x64 package
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown,x86_64-pc-windows-msvc
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            git
+            diffutils
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-yasm
+      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+        with:
+          tool: trunk@0.21.14
+      - name: Install pinned Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Build standalone installers
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      - name: Inspect installers on a clean runner
+        shell: pwsh
+        run: |
+          $bundle = "target/x86_64-pc-windows-msvc/release/bundle"
+          $installer = Get-ChildItem (Join-Path $bundle "nsis") -Filter *.exe | Select-Object -First 1
+          if (-not $installer) { throw "No NSIS installer was generated" }
+          $extract = Join-Path $env:RUNNER_TEMP "myna-installer"
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          7z x $installer.FullName "-o$extract" -y | Out-Null
+          $required = @("libvlc.dll", "libvlccore.dll")
+          foreach ($name in $required) {
+            if (-not (Get-ChildItem $extract -Recurse -Filter $name | Select-Object -First 1)) { throw "$name is missing" }
+          }
+          foreach ($prefix in @("ffmpeg", "ffprobe", "whisper-server")) {
+            $binary = Get-ChildItem $extract -Recurse -Filter "$prefix*.exe" | Select-Object -First 1
+            if (-not $binary) { throw "$prefix sidecar is missing" }
+          }
+          foreach ($license in @("Myna-Player-GPL-3.0.txt", "VLC-COPYING.txt", "FFmpeg-LICENSE.md", "whisper.cpp-LICENSE.txt")) {
+            if (-not (Get-ChildItem $extract -Recurse -Filter $license | Select-Object -First 1)) { throw "$license is missing" }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: myna-player-windows-x64-smoke
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7

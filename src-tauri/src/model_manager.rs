@@ -1,7 +1,9 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use myna_player_core::ModelDescriptor;
@@ -17,10 +19,25 @@ const VAD_URL: &str =
 const VAD_SHA256: &str = "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987";
 const VAD_SIZE: u64 = 885_098;
 
+#[derive(Debug, Clone)]
+struct CachedHash {
+    size_bytes: u64,
+    modified_ns: u128,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DownloadProgress {
+    downloaded_bytes: u64,
+}
+
 #[derive(Clone)]
 pub struct ModelManager {
     root: PathBuf,
     client: reqwest::Client,
+    installing: Arc<Mutex<HashSet<String>>>,
+    progress: Arc<Mutex<HashMap<String, DownloadProgress>>>,
+    verification_cache: Arc<Mutex<HashMap<PathBuf, CachedHash>>>,
 }
 
 struct CatalogModel {
@@ -62,7 +79,13 @@ impl ModelManager {
             .timeout(std::time::Duration::from_secs(20 * 60))
             .build()
             .map_err(|error| error.to_string())?;
-        Ok(Self { root, client })
+        Ok(Self {
+            root,
+            client,
+            installing: Arc::new(Mutex::new(HashSet::new())),
+            progress: Arc::new(Mutex::new(HashMap::new())),
+            verification_cache: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     pub fn list(&self) -> Vec<ModelDescriptor> {
@@ -75,7 +98,7 @@ impl ModelManager {
         if !path.is_file() {
             return Ok(self.describe(model));
         }
-        let actual = sha256_file(&path)?;
+        let actual = self.sha256_cached(&path)?;
         if actual != model.sha256 {
             return Err(format!(
                 "checksum mismatch for {}: expected {}, got {}",
@@ -88,9 +111,18 @@ impl ModelManager {
     pub async fn install(&self, id: &str) -> Result<ModelDescriptor, String> {
         let model = catalog_model(id)?;
         let final_path = self.root.join(model.file_name);
-        if final_path.is_file() && sha256_file(&final_path)? == model.sha256 {
+        if final_path.is_file() && self.sha256_cached(&final_path)? == model.sha256 {
             return Ok(self.describe(model));
         }
+        self.begin_install(model.id)?;
+        self.set_progress(model.id, 0);
+        let result = self.install_inner(model).await;
+        self.finish_install(model.id);
+        result.map(|()| self.describe(model))
+    }
+
+    async fn install_inner(&self, model: &CatalogModel) -> Result<(), String> {
+        let final_path = self.root.join(model.file_name);
         let partial_path = final_path.with_extension("bin.part");
         let response = self
             .client
@@ -123,6 +155,7 @@ impl ModelManager {
                 .await
                 .map_err(|error| error.to_string())?;
             written = written.saturating_add(chunk.len() as u64);
+            self.set_progress(model.id, written);
             if written > model.size_bytes.saturating_add(1_024) {
                 let _ = tokio::fs::remove_file(&partial_path).await;
                 return Err("download exceeded the expected model size".into());
@@ -151,22 +184,104 @@ impl ModelManager {
             fs::remove_file(&final_path).map_err(|error| error.to_string())?;
         }
         fs::rename(&partial_path, &final_path).map_err(|error| error.to_string())?;
-        Ok(self.describe(model))
+        if let Ok(mut cache) = self.verification_cache.lock() {
+            cache.remove(&partial_path);
+            cache.remove(&final_path);
+        }
+        Ok(())
     }
 
     pub fn delete(&self, id: &str) -> Result<ModelDescriptor, String> {
         let model = catalog_model(id)?;
+        if self.is_installing(id) {
+            return Err(format!("{} is currently downloading", model.display_name));
+        }
         let path = self.root.join(model.file_name);
         if path.exists() {
-            fs::remove_file(path).map_err(|error| error.to_string())?;
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+        }
+        if let Ok(mut cache) = self.verification_cache.lock() {
+            cache.remove(&path);
         }
         Ok(self.describe(model))
+    }
+
+    fn sha256_cached(&self, path: &Path) -> Result<String, String> {
+        let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        if let Ok(cache) = self.verification_cache.lock()
+            && let Some(entry) = cache.get(path)
+            && entry.size_bytes == metadata.len()
+            && entry.modified_ns == modified_ns
+        {
+            return Ok(entry.sha256.clone());
+        }
+        let sha256 = sha256_file(path)?;
+        if let Ok(mut cache) = self.verification_cache.lock() {
+            cache.insert(
+                path.to_path_buf(),
+                CachedHash {
+                    size_bytes: metadata.len(),
+                    modified_ns,
+                    sha256: sha256.clone(),
+                },
+            );
+        }
+        Ok(sha256)
+    }
+
+    fn begin_install(&self, id: &str) -> Result<(), String> {
+        let mut installing = self
+            .installing
+            .lock()
+            .map_err(|_| "model installation lock was poisoned".to_string())?;
+        if !installing.insert(id.to_owned()) {
+            return Err(format!("model {id} is already downloading"));
+        }
+        Ok(())
+    }
+
+    fn finish_install(&self, id: &str) {
+        if let Ok(mut installing) = self.installing.lock() {
+            installing.remove(id);
+        }
+        if let Ok(mut progress) = self.progress.lock() {
+            progress.remove(id);
+        }
+    }
+
+    fn set_progress(&self, id: &str, downloaded_bytes: u64) {
+        if let Ok(mut progress) = self.progress.lock() {
+            progress.insert(id.to_owned(), DownloadProgress { downloaded_bytes });
+        }
+    }
+
+    fn is_installing(&self, id: &str) -> bool {
+        self.installing
+            .lock()
+            .is_ok_and(|installing| installing.contains(id))
     }
 
     fn describe(&self, model: &CatalogModel) -> ModelDescriptor {
         let path = self.root.join(model.file_name);
         let installed = path.is_file();
-        let verified = installed && sha256_file(&path).is_ok_and(|actual| actual == model.sha256);
+        let verified = installed
+            && self
+                .sha256_cached(&path)
+                .is_ok_and(|actual| actual == model.sha256);
+        let installing = self.is_installing(model.id);
+        let downloaded_bytes = self
+            .progress
+            .lock()
+            .ok()
+            .and_then(|progress| progress.get(model.id).copied())
+            .map(|progress| progress.downloaded_bytes)
+            .unwrap_or(0);
         ModelDescriptor {
             id: model.id.into(),
             display_name: model.display_name.into(),
@@ -176,6 +291,8 @@ impl ModelManager {
             sha256: model.sha256.into(),
             installed,
             verified,
+            installing,
+            downloaded_bytes,
             path: installed.then(|| path.to_string_lossy().into_owned()),
         }
     }
@@ -214,5 +331,41 @@ mod tests {
             assert_eq!(model.sha256.len(), 64);
             assert!(model.size_bytes > 0);
         }
+    }
+
+    #[test]
+    fn cached_hash_is_invalidated_when_file_metadata_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = ModelManager::new(directory.path().join("models")).unwrap();
+        let path = directory.path().join("model.bin");
+        fs::write(&path, b"first").unwrap();
+        let first = manager.sha256_cached(&path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::write(&path, b"second-version").unwrap();
+        let second = manager.sha256_cached(&path).unwrap();
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn concurrent_install_of_the_same_model_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = ModelManager::new(directory.path().join("models")).unwrap();
+        manager.begin_install("whisper-base").unwrap();
+        assert!(manager.begin_install("whisper-base").is_err());
+        let descriptor = manager
+            .list()
+            .into_iter()
+            .find(|model| model.id == "whisper-base")
+            .unwrap();
+        assert!(descriptor.installing);
+        manager.finish_install("whisper-base");
+        assert!(
+            !manager
+                .list()
+                .into_iter()
+                .find(|model| model.id == "whisper-base")
+                .unwrap()
+                .installing
+        );
     }
 }

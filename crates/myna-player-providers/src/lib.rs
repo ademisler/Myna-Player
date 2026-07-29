@@ -138,9 +138,9 @@ impl Default for ProviderRegistry {
                     unavailable_reason: None,
                 },
                 cloud_provider("openai", "OpenAI", "gpt-5-mini"),
-                cloud_provider("gemini", "Google Gemini", "gemini-3.6-flash"),
+                cloud_provider("gemini", "Google Gemini", "gemini-3.5-flash"),
                 cloud_provider("openrouter", "OpenRouter", "openai/gpt-4.1-mini"),
-                cloud_provider("minimax", "MiniMax", "MiniMax-M2.7"),
+                cloud_provider("minimax", "MiniMax", "MiniMax-M3"),
             ]),
         }
     }

@@ -29,4 +29,7 @@ $Binary = Get-ChildItem -Path $Build -Recurse -Filter whisper-server.exe | Selec
 if (-not $Binary) { throw "whisper-server.exe build output not found" }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Output) | Out-Null
 Copy-Item -Force $Binary.FullName $Output
+$LicenseDir = Join-Path $Repo "src-tauri/vendor/whisper"
+New-Item -ItemType Directory -Force -Path $LicenseDir | Out-Null
+Copy-Item -Force (Join-Path $Source "LICENSE") (Join-Path $LicenseDir "LICENSE.txt")
 Write-Host "Built pinned whisper sidecar: $Output"

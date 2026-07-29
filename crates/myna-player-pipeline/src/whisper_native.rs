@@ -86,7 +86,12 @@ impl NativeWhisper {
             params.set_initial_prompt(prompt);
         }
         let cancel_for_callback = Arc::clone(&cancelled);
-        params.set_abort_callback_safe(Some(move || cancel_for_callback.load(Ordering::Relaxed)));
+        let abort_callback: Box<dyn FnMut() -> bool> =
+            Box::new(move || cancel_for_callback.load(Ordering::Relaxed));
+        params
+            .set_abort_callback_safe::<Option<Box<dyn FnMut() -> bool>>, Box<dyn FnMut() -> bool>>(
+                Some(abort_callback),
+            );
 
         let started = Instant::now();
         state.full(params, &audio).map_err(|error| {
