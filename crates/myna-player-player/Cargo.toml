@@ -9,6 +9,6 @@ repository = "https://github.com/ademisler/Myna-Player"
 publish = false
 
 [dependencies]
-libloading = "0.8"
+libloading = "0.9"
 thiserror = "2"
 myna-player-core = { path = "../myna-player-core", version = "0.1.0" }
