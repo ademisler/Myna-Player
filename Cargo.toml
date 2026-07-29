@@ -9,7 +9,7 @@ repository = "https://github.com/ademisler/Myna-Player"
 publish = false
 
 [dependencies]
-leptos = { version = "0.7", features = ["csr"] }
+leptos = { version = "0.8", features = ["csr"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
