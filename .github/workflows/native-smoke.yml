@@ -39,9 +39,10 @@ jobs:
       - name: Exercise bundled libVLC playback and replay
         shell: bash
         run: |
-          app="target/aarch64-apple-darwin/release/bundle/macos/Myna Player.app"
+          app="$(cd "target/aarch64-apple-darwin/release/bundle/macos/Myna Player.app" && pwd)"
           ffmpeg="$(find "$app/Contents/MacOS" -maxdepth 1 -name 'ffmpeg*' -type f | head -n 1)"
           "$ffmpeg" -hide_banner -loglevel error -f lavfi -i color=size=320x180:rate=25:color=black -f lavfi -i sine=frequency=440:sample_rate=48000 -t 1.5 -shortest -c:v mpeg4 -c:a aac "$RUNNER_TEMP/myna-smoke.mp4"
+          DYLD_LIBRARY_PATH="$app/Contents/Frameworks" \
           MYNA_PLAYER_LIBVLC_PATH="$app/Contents/Frameworks/libvlc.dylib" \
           MYNA_PLAYER_VLC_PLUGIN_PATH="$app/Contents/Resources/vlc/plugins" \
           MYNA_PLAYER_TEST_MEDIA="$RUNNER_TEMP/myna-smoke.mp4" \

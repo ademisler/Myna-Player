@@ -14,6 +14,7 @@ The project follows the principles of [Keep a Changelog](https://keepachangelog.
 
 ### Changed
 
+- Native package smoke verification now retries and validates the official Windows VLC archive and resolves bundled macOS libVLC dependencies from the app Frameworks directory.
 - Production runtime hardening for bundled FFmpeg, FFprobe, whisper.cpp, libVLC, model verification, CSP, storage migrations, and provider validation.
 - MiniMax M3 and Gemini 3.5 Flash provider defaults and stricter structured-output handling.
 
