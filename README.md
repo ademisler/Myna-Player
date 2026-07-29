@@ -145,4 +145,4 @@ Signing and notarization are performed by the release workflow when repository s
 
 ## License
 
-Myna Player is free software licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE).
+Myna Player is free software licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE) and [COPYRIGHT](COPYRIGHT).
