@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Local-first AI subtitle player frontend"
 license = "GPL-3.0-or-later"
+homepage = "https://myna-player.github.io/"
+repository = "https://github.com/ademisler/Myna-Player"
+publish = false
 
 [dependencies]
 leptos = { version = "0.7", features = ["csr"] }

@@ -91,6 +91,7 @@ pub fn run() {
             commands::export_subtitles,
             commands::update_subtitle_cue,
             commands::open_media,
+            commands::reset_current_media,
             commands::player_snapshot,
             commands::player_command,
             commands::subscribe_player_events,

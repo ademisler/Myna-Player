@@ -801,3 +801,28 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   background: #080a09;
   font: 8px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+.video-reset-card {
+  margin-top: 16px;
+  padding: 17px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  border: 1px solid rgba(216, 122, 116, .2);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(216, 122, 116, .07), rgba(255, 255, 255, .018));
+}
+.video-reset-card > div:first-child { display: grid; gap: 6px; }
+.video-reset-card strong { color: #ece6e3; font-size: 11px; }
+.video-reset-card p { max-width: 560px; margin: 0; color: #7d7471; font-size: 9px; line-height: 1.55; }
+.reset-confirmation { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.button--danger-ghost { border-color: rgba(220, 123, 117, .25); color: #d99a96; background: rgba(220, 123, 117, .05); }
+.button--danger-ghost:hover { border-color: rgba(220, 123, 117, .45); color: #f1b3ae; background: rgba(220, 123, 117, .1); }
+.button--danger { border-color: #b85e59; color: #fff6f4; background: #a9514d; }
+.button--danger:hover { background: #bd605a; }
+@media (max-width: 720px) {
+  .video-reset-card { grid-template-columns: 1fr; }
+  .video-reset-card > .button, .reset-confirmation { justify-self: stretch; }
+  .reset-confirmation .button { flex: 1; }
+}

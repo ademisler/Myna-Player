@@ -25,6 +25,13 @@ struct OpenMediaResult {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetMediaResult {
+    player: PlayerSnapshot,
+    processing: ProcessingSnapshot,
+}
+
+#[derive(Debug, Deserialize)]
 struct DragMessage {
     kind: String,
     path: Option<String>,
@@ -563,6 +570,24 @@ pub fn App() -> impl IntoView {
             });
         },
     );
+    let reset_current_media = Callback::new(move |()| {
+        set_wants_playing.set(false);
+        set_toast.set(Some("Resetting this video's generated data…".into()));
+        spawn_local(async move {
+            match invoke_typed::<ResetMediaResult, _>("reset_current_media", &EmptyArgs {}).await {
+                Ok(result) => {
+                    set_player.set(result.player);
+                    set_processing.set(result.processing);
+                    set_toast.set(Some(
+                        "Transcript, translations and processing cache were reset.".into(),
+                    ));
+                    clear_toast_later(set_toast);
+                }
+                Err(error) => show_error(set_toast, error),
+            }
+        });
+    });
+
     let update_subtitle_cue = Callback::new(move |edit: SubtitleEditRequest| {
         spawn_local(async move {
             match invoke_typed::<ProcessingSnapshot, _>(
@@ -666,6 +691,7 @@ pub fn App() -> impl IntoView {
             on_process_pause=process_pause
             on_process_retry=process_retry
             on_process_translate=process_translate
+            on_reset_current_media=reset_current_media
             on_export_subtitles=export_subtitles
             on_update_subtitle_cue=update_subtitle_cue
             on_select_track=on_select_track

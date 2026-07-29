@@ -423,6 +423,53 @@ impl ProcessingService {
         Ok(format!("{PIPELINE_FORMAT_VERSION}:{digest:x}"))
     }
 
+    pub fn reset_current_media(self: &Arc<Self>) -> Result<ProcessingSnapshot, String> {
+        let (metadata, identity, mut settings, audio_track) = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "processing state lock was poisoned".to_string())?;
+            let session = inner
+                .session
+                .take()
+                .ok_or_else(|| "Open a video before resetting its data.".to_string())?;
+            session.cancel_token.store(true, Ordering::Relaxed);
+            inner.snapshot = ProcessingSnapshot {
+                media_path: Some(session.path.clone()),
+                stage: ProcessingStage::Idle,
+                status_message: "Resetting generated data…".into(),
+                ..ProcessingSnapshot::default()
+            };
+            broadcast_processing_locked(&mut inner);
+            (
+                session.metadata,
+                session.identity,
+                session.settings,
+                session.audio_track,
+            )
+        };
+
+        self.asr.cancel_current();
+        self.storage
+            .purge_media_cache(&identity.fingerprint)
+            .map_err(|error| error.to_string())?;
+        self.storage
+            .upsert_media(&identity, metadata.duration_ms)
+            .map_err(|error| error.to_string())?;
+
+        // A reset must remain visibly empty. Reopening the media still follows the
+        // user's normal auto-start preference, while this in-place reset waits
+        // for an explicit Start / continue action.
+        settings.transcription.auto_start = false;
+        let mut snapshot = self.prepare(&metadata, identity, settings, audio_track, 0)?;
+        snapshot.status_message = "Video data reset. Start processing when you are ready.".into();
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.snapshot = snapshot.clone();
+            broadcast_processing_locked(&mut inner);
+        }
+        Ok(snapshot)
+    }
+
     pub fn subscribe(&self, channel: Channel<ProcessingEvent>) {
         let snapshot = self.snapshot();
         let _ = channel.send(ProcessingEvent::Snapshot { snapshot });

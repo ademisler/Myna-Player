@@ -42,6 +42,7 @@ pub fn SettingsModal(
     on_process_pause: Callback<()>,
     on_process_retry: Callback<()>,
     on_process_translate: Callback<()>,
+    on_reset_current_media: Callback<()>,
     on_export_subtitles: Callback<(SubtitleExportFormat, SubtitleExportTrack)>,
     on_update_subtitle_cue: Callback<SubtitleEditRequest>,
     on_select_track: Callback<(TrackKind, i32)>,
@@ -107,6 +108,7 @@ pub fn SettingsModal(
                                 on_pause=on_process_pause
                                 on_retry=on_process_retry
                                 on_translate=on_process_translate
+                                on_reset=on_reset_current_media
                                 on_export=on_export_subtitles
                                 on_update_cue=on_update_subtitle_cue
                                 on_select_track=on_select_track
@@ -633,6 +635,7 @@ fn CurrentMediaTab(
     on_pause: Callback<()>,
     on_retry: Callback<()>,
     on_translate: Callback<()>,
+    on_reset: Callback<()>,
     on_export: Callback<(SubtitleExportFormat, SubtitleExportTrack)>,
     on_update_cue: Callback<SubtitleEditRequest>,
     on_select_track: Callback<(TrackKind, i32)>,
@@ -644,6 +647,7 @@ fn CurrentMediaTab(
     let source_text = RwSignal::new(String::new());
     let translated_text = RwSignal::new(String::new());
     let export_track = RwSignal::new("source".to_string());
+    let reset_confirming = RwSignal::new(false);
 
     view! {
         <SettingsSection
@@ -766,6 +770,47 @@ fn CurrentMediaTab(
                         <p class="inline-error">{move || processing.get().error.unwrap_or_default()}</p>
                     </Show>
                 </div>
+                <div class="video-reset-card">
+                    <div>
+                        <small class="group-label">"Per-video data"</small>
+                        <strong>"Start fresh with this video"</strong>
+                        <p>
+                            "Deletes its transcript, translations, processing checkpoints and remembered playback position. The video stays open and returns to the beginning."
+                        </p>
+                    </div>
+                    <Show
+                        when=move || reset_confirming.get()
+                        fallback=move || view! {
+                            <button
+                                class="button button--danger-ghost"
+                                on:click=move |_| reset_confirming.set(true)
+                            >
+                                "Reset this video"
+                            </button>
+                        }
+                    >
+                        <div class="reset-confirmation">
+                            <button
+                                class="button button--ghost"
+                                on:click=move |_| reset_confirming.set(false)
+                            >
+                                "Cancel"
+                            </button>
+                            <button
+                                class="button button--danger"
+                                on:click=move |_| {
+                                    reset_confirming.set(false);
+                                    editor_open.set(false);
+                                    selected_id.set(String::new());
+                                    on_reset.run(());
+                                }
+                            >
+                                "Confirm reset"
+                            </button>
+                        </div>
+                    </Show>
+                </div>
+
                 <div class="subtitle-tools">
                     <div class="subtitle-tools__head">
                         <div>

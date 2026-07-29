@@ -22,6 +22,13 @@ pub struct OpenMediaResult {
     pub resumed_at_ms: u64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetMediaResult {
+    pub player: PlayerSnapshot,
+    pub processing: ProcessingSnapshot,
+}
+
 #[tauri::command]
 pub async fn pick_video(app: AppHandle) -> Result<Option<String>, String> {
     let selected = app
@@ -225,6 +232,18 @@ pub async fn open_media(
         processing,
         resumed_at_ms,
     })
+}
+
+#[tauri::command]
+pub fn reset_current_media(state: State<'_, Arc<AppState>>) -> Result<ResetMediaResult, String> {
+    let _ = state.player.command(PlayerCommand::Pause);
+    let player = state
+        .player
+        .command(PlayerCommand::Seek { position_ms: 0 })
+        .map_err(|error| error.to_string())?;
+    let processing = state.processing.reset_current_media()?;
+    state.broadcast_player(player.clone());
+    Ok(ResetMediaResult { player, processing })
 }
 
 #[tauri::command]

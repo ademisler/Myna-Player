@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "SQLite persistence and media identity for Myna Player"
 license = "GPL-3.0-or-later"
+homepage = "https://myna-player.github.io/"
+repository = "https://github.com/ademisler/Myna-Player"
+publish = false
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }

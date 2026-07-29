@@ -50,3 +50,17 @@ On Windows, Myna Player creates an application-owned child HWND below WebView2 a
 - Worker stdout/stderr is continuously drained; it is retained only in a bounded, home-path-redacted ring buffer when diagnostic logging is explicitly enabled.
 - Whisper and Silero models are activated only after pinned size and SHA-256 verification.
 - Provider responses must return every requested cue ID exactly once; missing, duplicate, reordered, or unknown IDs are rejected before persistence.
+
+## Per-video data lifecycle
+
+A media fingerprint is the parent key for playback position, processing windows, transcript segments, and provider-specific translations. SQLite foreign keys use `ON DELETE CASCADE`, so per-video deletion is atomic from the application's perspective.
+
+The **Reset this video** command:
+
+1. cancels the current ASR and translation generation;
+2. pauses playback and seeks the native player to `00:00`;
+3. deletes the media fingerprint row, cascading to checkpoints, transcript segments, and translations;
+4. recreates only the open-media identity record;
+5. rebuilds an empty, paused processing session that waits for explicit user action.
+
+Global settings, installed models, provider credentials, and other videos are intentionally preserved.

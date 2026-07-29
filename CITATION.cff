@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use or reference Myna Player, please cite the software repository."
+title: "Myna Player"
+type: software
+authors:
+  - family-names: "Isler"
+    given-names: "Adem"
+repository-code: "https://github.com/ademisler/Myna-Player"
+url: "https://myna-player.github.io/"
+license: "GPL-3.0-or-later"
+version: "0.1.0"
+keywords:
+  - subtitles
+  - speech recognition
+  - translation
+  - video player
+  - whisper

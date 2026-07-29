@@ -65,3 +65,13 @@ The following workflows are the source of truth:
 
 A release is not marked **Release verified** until the corresponding workflow
 has completed successfully with the repository signing secrets configured.
+
+## Open-source project health
+
+- [x] GPL-3.0-or-later license committed at the repository root
+- [x] Contribution, security, support, and conduct policies
+- [x] Structured issue and pull-request templates
+- [x] Dependency update configuration and pull-request quality workflow
+- [x] Public project website and privacy documentation
+- [ ] First signed public alpha release
+- [ ] Verified installer smoke tests on clean macOS Intel and Windows machines

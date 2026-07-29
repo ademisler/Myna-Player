@@ -1165,6 +1165,71 @@ mod tests {
     }
 
     #[test]
+    fn purging_media_cache_cascades_through_all_generated_data() {
+        let (_directory, storage) = test_storage();
+        insert_media(&storage, "reset-me");
+        let segment = TranscriptSegment {
+            id: "segment-1".into(),
+            start_ms: 100,
+            end_ms: 900,
+            text: "Reset this line".into(),
+            detected_language: Some("en".into()),
+            language_confidence: Some(0.99),
+            is_final: true,
+        };
+        storage
+            .replace_window_segments(
+                "reset-me",
+                0,
+                "pipeline",
+                0,
+                1_000,
+                1,
+                std::slice::from_ref(&segment),
+            )
+            .unwrap();
+        storage
+            .store_translations(
+                "reset-me",
+                0,
+                "pipeline",
+                "deepl",
+                "TR",
+                &[SubtitleCue {
+                    id: segment.id.clone(),
+                    start_ms: segment.start_ms,
+                    end_ms: segment.end_ms,
+                    source_text: segment.text.clone(),
+                    translated_text: Some("Bu satırı sıfırla".into()),
+                    source_language: Some("en".into()),
+                    target_language: Some("TR".into()),
+                    status: CueStatus::Ready,
+                }],
+            )
+            .unwrap();
+        storage.save_playback_position("reset-me", 42_000).unwrap();
+
+        storage.purge_media_cache("reset-me").unwrap();
+
+        let connection = storage.connection.lock().unwrap();
+        for table in [
+            "media",
+            "processing_windows",
+            "transcript_segments",
+            "translations",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE fingerprint = 'reset-me'"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} retained reset data");
+        }
+    }
+
+    #[test]
     fn ephemeral_media_is_removed_on_startup_cleanup() {
         let (_directory, storage) = test_storage();
         insert_media(&storage, "ephemeral");
