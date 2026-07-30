@@ -15,11 +15,39 @@ output_dir="$repo_dir/src-tauri/binaries"
 url="https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
 
 mkdir -p "$cache_dir" "$output_dir"
-if [[ ! -f "$archive" ]]; then
-  curl --fail --location --continue-at - --progress-bar "$url" --output "$archive.part"
+
+compute_sha256() {
+  local path="$1"
+  local digest
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$path" | awk '{print $1}')"
+  else
+    digest="$(shasum -a 256 "$path" | awk '{print $1}')"
+  fi
+  # GNU checksum tools prefix the whole line with a backslash when the filename
+  # needs escaping. MSYS2 can trigger that form for Windows-backed paths.
+  digest="${digest#'\\'}"
+  digest="${digest//$'\r'/}"
+  printf '%s' "$digest" | tr '[:upper:]' '[:lower:]'
+}
+
+download_archive() {
+  rm -f "$archive.part"
+  curl --fail --location --retry 5 --retry-delay 2 --retry-all-errors \
+    --continue-at - --progress-bar "$url" --output "$archive.part"
   mv "$archive.part" "$archive"
+}
+
+if [[ ! -f "$archive" ]]; then
+  download_archive
 fi
-actual_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+actual_sha256="$(compute_sha256 "$archive")"
+if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+  echo "Cached FFmpeg archive failed verification; downloading a clean copy." >&2
+  rm -f "$archive"
+  download_archive
+  actual_sha256="$(compute_sha256 "$archive")"
+fi
 [[ "$actual_sha256" == "$expected_sha256" ]] || {
   echo "FFmpeg checksum mismatch. Expected $expected_sha256, got $actual_sha256" >&2
   exit 3
