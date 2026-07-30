@@ -25,10 +25,13 @@ compute_sha256() {
     digest="$(shasum -a 256 "$path" | awk '{print $1}')"
   fi
   # GNU checksum tools prefix the whole line with a backslash when the filename
-  # needs escaping. MSYS2 can trigger that form for Windows-backed paths.
-  digest="${digest#'\\'}"
-  digest="${digest//$'\r'/}"
-  printf '%s' "$digest" | tr '[:upper:]' '[:lower:]'
+  # needs escaping. MSYS2 can also leave carriage returns in captured output.
+  # A SHA-256 digest begins with a hexadecimal character, so discard only the
+  # leading non-hex transport markers and normalize the remaining digest.
+  printf '%s' "$digest" \
+    | tr -d '\r' \
+    | sed 's/^[^0-9A-Fa-f]*//' \
+    | tr '[:upper:]' '[:lower:]'
 }
 
 download_archive() {
