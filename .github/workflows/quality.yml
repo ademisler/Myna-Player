@@ -23,7 +23,7 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt,clippy
           targets: wasm32-unknown-unknown
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833
         with:
           tool: trunk@0.21.14
       - name: Formatting
@@ -43,7 +43,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.97.1
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833
         with:
           tool: cargo-deny@0.20.2
       - run: cargo deny check licenses bans sources advisories
