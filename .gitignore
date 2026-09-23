@@ -5,8 +5,8 @@
 /src-tauri/vendor/
 .DS_Store
 *.log
-.env
-.env.*
 !.env.example
 
 /src-tauri/binaries/
+config.bat
+node_modules
