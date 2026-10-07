@@ -46,7 +46,7 @@ jobs:
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown,${{ matrix.target }}
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0
         with:
           tool: trunk@0.21.14
       - name: Install pinned Tauri CLI
@@ -90,7 +90,7 @@ jobs:
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown,x86_64-pc-windows-msvc
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
         with:
           msystem: MINGW64
           update: true
@@ -102,7 +102,7 @@ jobs:
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-nasm
             mingw-w64-x86_64-yasm
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0
         with:
           tool: trunk@0.21.14
       - name: Install pinned Tauri CLI
