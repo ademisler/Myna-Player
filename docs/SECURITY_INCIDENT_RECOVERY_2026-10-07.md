@@ -35,7 +35,7 @@ Representative malicious commits from the compromised repository:
 Representative malicious blob/object indicators:
 
 - `50d61c1bbbcd89f4e6d9c9a34f8d3bf2fdacd3ea`
-- `27338d3d89f4e6d9c9a34f8d3bf2fdacd3ea`
+- `27338d3d89c5f0c86cf222cb616f2b2bcbaf1dc1`
 
 Observed malware behavior included VS Code folder-open autorun configuration and JavaScript disguised as a font payload.
 
