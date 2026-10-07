@@ -87,11 +87,13 @@ Ternrise was searched for Myna Player checkout/worktree paths and none were foun
 
 No deployment hold was required because no active Myna Player deployment trust path was identified on Ternrise during recovery.
 
-## Backup artifacts
+## Initial reconstruction artifact hashes
 
-- Clean source tarball SHA-256: `065cc276365e20c6c0ee879d7307a4ad8a4b6db0b6cbc82c897ce2f7c4675daa`
-- Tracked-file SHA-256 manifest SHA-256: `453298407c75a30650576fe1ebd1b379e6a741aef1841674271fad12a9a0ea17`
-- Fresh root Git bundle SHA-256: `ee45dbb35161959a7587dde8bb39b88da19efe763e62f99c225e40b0790e350e`
+The following hashes were recorded during the initial clean-room reconstruction. Those temporary outputs were not retained on Ternrise. The physically persisted closure backup set and its current checksums are recorded in the final verification section below.
+
+- Initial clean source tarball SHA-256: `065cc276365e20c6c0ee879d7307a4ad8a4b6db0b6cbc82c897ce2f7c4675daa`
+- Initial tracked-file manifest SHA-256: `453298407c75a30650576fe1ebd1b379e6a741aef1841674271fad12a9a0ea17`
+- Initial fresh-root Git bundle SHA-256: `ee45dbb35161959a7587dde8bb39b88da19efe763e62f99c225e40b0790e350e`
 
 ## Recovery rule
 
