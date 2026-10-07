@@ -55,6 +55,26 @@ All representative bad commit/blob SHAs above returned HTTP 404 when queried aga
 
 No dependency install, project build, or executable repository code was run during source reconstruction. Full isolated build/test remains pending because the available Modal environment could be leased but remote source execution was blocked by the control-plane safety boundary. This is a test-coverage limitation, not a source-integrity failure.
 
+## Post-cutover isolated CI verification
+
+GitHub-hosted runners executed the rebuilt repository after cutover, so the earlier Modal execution limitation is no longer the only available runtime evidence.
+
+- Quality run `37663328116` on rebuilt main:
+  - formatting: PASS
+  - workspace tests with every feature: PASS
+  - Windows native compile: PASS
+  - advisories/licenses/sources (`cargo deny`): PASS
+  - Clippy: FAIL only on two Rust 1.99 `clippy::double_must_use` diagnostics generated through `async_trait` in `crates/myna-player-pipeline/src/lib.rs` (traits `AsrEngine` and `TranslationProvider`)
+  - Leptos release build: skipped because the Clippy step failed first
+- Native package smoke run `37663328023`:
+  - clean macOS arm64 standalone bundle: PASS
+  - bundled libVLC playback/replay exercise: PASS
+  - Windows x64 package: FAIL in `scripts/build-ffmpeg-sidecars-windows.ps1` because MSYS2 `tar` interpreted the runner's `D:` path as a remote host (`tar: Cannot connect to D: resolve failed`), after libVLC staging and the pinned whisper sidecar build had already passed
+
+These two remaining CI failures are ordinary post-recovery code/tooling issues and do not indicate repository contamination or a source-integrity failure.
+
+Fresh Dependabot branches created after cutover were separately reviewed. Their commits are GitHub-verified, contain no known incident IOC paths, and change only `Cargo.lock` (Rust dependency update) or the three pinned workflow files (GitHub Actions update).
+
 ## Metadata and credentials
 
 Restored repository metadata includes the original description, homepage, topics, and merge settings.
