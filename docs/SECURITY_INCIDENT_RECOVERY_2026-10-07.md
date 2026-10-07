@@ -96,3 +96,35 @@ No deployment hold was required because no active Myna Player deployment trust p
 ## Recovery rule
 
 Do not reintroduce Git object databases, refs, worktrees, caches, editor autorun configuration, or credentials from the archived compromised repository into the rebuilt repository. Future dependency-update branches must be treated as untrusted until the account/session compromise path is fully understood.
+
+
+## Final GitHub admin verification and persisted closure backups
+
+A final authenticated GitHub Settings audit was performed through a dedicated Chromium CDP target without navigating or mutating unrelated tabs.
+
+- Rebuilt repository ID: `1409176639`; public, active, non-template.
+- Archived original repository ID: `1314307883`; private and archived read-only.
+- `main` has classic branch protection. Force pushes and branch deletion are disabled.
+- No repository rulesets are configured.
+- Actions repository/environment secrets: none.
+- Actions repository/environment variables: none.
+- Dependabot secrets: none.
+- Codespaces secrets: none.
+- Agents secrets: none.
+- Environments: none.
+- Deploy keys: none.
+- Webhooks: none.
+- Installed GitHub Apps matched the archived repository set; no additional app was introduced by the clean-room cutover.
+- Two open Dependabot PRs remain after cutover. Both were reviewed as GitHub-verified, post-recovery branches with no known incident IOC paths; one changes only `Cargo.lock`, and the other changes only the pinned GitHub Actions workflow files.
+
+Persistent closure backups were regenerated from the rebuilt repository's clean root commit `5eb4806b8532a24e026e0d1d96b5f7976d84faae` and stored at:
+
+`/root/forensics/myna-player-20261007`
+
+Artifacts:
+
+- `Myna-Player-clean-root.tar.gz` — SHA-256 `b847f26ab4df9455b65993141f99960159805a3eb2d1a31598622f3401a06565`
+- `Myna-Player-clean-root.bundle` — SHA-256 `ceb0d472945c913dcd6c9eed3e50e20fe1fcdfa6dc79f09cbd1e035acf64245f`
+- `Myna-Player-clean-root-files.sha256` — SHA-256 `787bed8be1b9eae5593c6e6dd8a2707b064d9a5590d4832fde6fe3eb9534ed61`
+
+The bundle verifies as a complete one-root history containing clean root `5eb4806b8532a24e026e0d1d96b5f7976d84faae`. The source archive and manifest each contain exactly 149 tracked files. Representative old malicious commit SHAs do not resolve in the rebuilt clone.
