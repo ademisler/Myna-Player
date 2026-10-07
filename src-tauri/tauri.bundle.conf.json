@@ -1,0 +1,27 @@
+{
+  "bundle": {
+    "resources": {
+      "vendor/libvlc/lib/": "vlc/lib/",
+      "vendor/libvlc/plugins/": "vlc/plugins/",
+      "vendor/libvlc/share/": "vlc/share/",
+      "vendor/libvlc/VLC-COPYING.txt": "licenses/VLC-COPYING.txt",
+      "vendor/ffmpeg/COPYING.LGPLv2.1.txt": "licenses/FFmpeg-COPYING.LGPLv2.1.txt",
+      "vendor/ffmpeg/LICENSE.md": "licenses/FFmpeg-LICENSE.md",
+      "vendor/whisper/LICENSE.txt": "licenses/whisper.cpp-LICENSE.txt",
+      "../LICENSE": "licenses/Myna-Player-GPL-3.0.txt",
+      "../docs/third-party-licenses.md": "licenses/Myna-Player-Third-Party-Notices.md"
+    },
+    "macOS": {
+      "frameworks": [
+        "vendor/libvlc/lib/libvlc.dylib",
+        "vendor/libvlc/lib/libvlccore.dylib"
+      ],
+      "minimumSystemVersion": "11.0"
+    },
+    "externalBin": [
+      "binaries/whisper-server",
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ]
+  }
+}

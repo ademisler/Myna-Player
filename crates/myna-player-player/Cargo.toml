@@ -1,0 +1,14 @@
+[package]
+name = "myna-player-player"
+version = "0.1.0"
+edition = "2024"
+description = "Native media-player boundary and libVLC backend for Myna Player"
+license = "GPL-3.0-or-later"
+homepage = "https://myna-player.github.io/"
+repository = "https://github.com/ademisler/Myna-Player"
+publish = false
+
+[dependencies]
+libloading = "0.8"
+thiserror = "2"
+myna-player-core = { path = "../myna-player-core", version = "0.1.0" }

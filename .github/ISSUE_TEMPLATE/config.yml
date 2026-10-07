@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and product discussion
+    url: https://github.com/ademisler/Myna-Player/discussions
+    about: Ask questions or discuss ideas before opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/ademisler/Myna-Player/security/advisories/new
+    about: Report vulnerabilities privately. Do not create a public issue.
+  - name: Myna Player website
+    url: https://myna-player.github.io/
+    about: Product overview and project links.
